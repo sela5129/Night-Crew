@@ -66,10 +66,21 @@ async function sbDelete(table, match) {
 
 function toBase64(file) {
   return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result);
-    r.onerror = rej;
-    r.readAsDataURL(file);
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const max = 800;
+      let w = img.width, h = img.height;
+      if (w > max) { h = (h * max) / w; w = max; }
+      if (h > max) { w = (w * max) / h; h = max; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      res(canvas.toDataURL("image/jpeg", 0.6));
+    };
+    img.onerror = rej;
+    img.src = url;
   });
 }
 
