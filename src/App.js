@@ -574,7 +574,7 @@ function AdminLogin({ setIsAdmin, setScreen }) {
         {error && <div style={S.errorMsg}>{error}</div>}
         <button style={S.btnPrimary} onClick={() => { if (code.trim().toUpperCase() === ADMIN_CODE) { setIsAdmin(true); setScreen("admin"); } else setError("Wrong code."); }}>Login</button>
       </div>
-      <div style={S.hintBox}><strong>Admin Code:</strong> <code style={S.codeChip}>{ADMIN_CODE}</code></div>
+      
     </div>
   );
 }
