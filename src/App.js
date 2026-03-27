@@ -4,7 +4,7 @@ const SUPABASE_URL = "https://nmpbvjpvolhtxrultmvj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_iZs30OH1g7IVnI0MvhUMPw_dwUVgBrS";
 
 const JOIN_CODE = "OVERNIGHT2026";
-const ADMIN_CODE = "TEAMLEAD";
+const ADMIN_CODE = "ONTL";
 
 const CHALLENGES = [
   { id: 1, category: "End Caps", label: "Stock Front End Cap to Height", points: 1, icon: "📦" },
@@ -20,7 +20,7 @@ const CHALLENGES = [
 const PRIZES = [
   { individual: true, label: "Extra 15-min Break", cost: 15 },
   { individual: true, label: "Pick Your Aisle for the Night", cost: 25 },
-  { individual: true, label: "$5 Sam's Club Gift Card", cost: 50 },
+  { individual: true, label: "$5 Sam's Club Gift Card", cost: 100 },
   { individual: false, label: "Pizza Party 🍕", cost: 200 },
   { individual: false, label: "Ice Cream Social 🍦", cost: 150 },
   { individual: false, label: "Team Snack Spread 🍿", cost: 100 },
@@ -357,7 +357,7 @@ function JoinScreen({ members, setCurrentUser, setScreen, loadAll }) {
         {error && <div style={S.errorMsg}>{error}</div>}
         <button style={{ ...S.btnPrimary, opacity: saving ? 0.6 : 1 }} onClick={handleJoin} disabled={saving}>{saving ? "Joining..." : "Join Team 🚀"}</button>
       </div>
-      <div style={S.hintBox}><strong>Team Code:</strong> <code style={S.codeChip}>{JOIN_CODE}</code></div>
+
     </div>
   );
 }
