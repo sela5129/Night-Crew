@@ -441,10 +441,10 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
     }
     setSaving(true);
     await sbInsert("submissions", {
-      id: Date.now(), member: currentUser, challenge_label: label, points,
-      bonus_id: subBonusId, before_img: beforeImg, after_img: afterImg,
-      note, status: "pending", date: new Date().toLocaleString()
-    });
+  member: currentUser, challenge_label: label, points,
+  bonus_id: subBonusId, before_img: beforeImg, after_img: afterImg,
+  note, status: "pending", date: new Date().toLocaleString()
+});
     await loadAll();
     setSubmitted(true); setSaving(false);
     setChallenge(""); setBonusId(""); setBeforeImg(null); setAfterImg(null); setNote("");
