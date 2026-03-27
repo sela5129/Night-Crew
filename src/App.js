@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from "react";
 
 const SUPABASE_URL = "https://nmpbvjpvolhtxrultmvj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_iZs30OH1g7IVnI0MvhUMPw_dwUVgBrS";
-
 const JOIN_CODE = "OVERNIGHT2026";
 const ADMIN_CODE = "ONTL";
 
@@ -17,21 +16,11 @@ const CHALLENGES = [
   { id: 8, category: "Pallets", label: "Fix Pallet Lines", points: 1, icon: "📏" },
 ];
 
-const PRIZES = [
-  { individual: true, label: "Extra 15-min Break", cost: 15 },
-  { individual: true, label: "Pick Your Aisle for the Night", cost: 25 },
-  { individual: true, label: "$5 Sam's Club Gift Card", cost: 100 },
-  { individual: false, label: "Pizza Party 🍕", cost: 200 },
-  { individual: false, label: "Ice Cream Social 🍦", cost: 150 },
-  { individual: false, label: "Team Snack Spread 🍿", cost: 100 },
-];
-
 const BONUS_ICONS = ["⭐","🎯","🚀","💥","🔥","⚡","🏅","🎪","🎲","💎"];
 
-// Supabase REST helpers
 async function sbGet(table, params = "") {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" }
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
   });
   return res.json();
 }
@@ -95,11 +84,19 @@ function getTimeLeft(endTime) {
   return `${s}s left`;
 }
 
+function todayStr() {
+  return new Date().toISOString().split("T")[0];
+}
+
 export default function App() {
   const [screen, setScreen] = useState("home");
   const [members, setMembers] = useState([]);
   const [submissions, setSubmissions] = useState([]);
   const [bonuses, setBonuses] = useState([]);
+  const [prizes, setPrizes] = useState([]);
+  const [announcement, setAnnouncement] = useState("");
+  const [questions, setQuestions] = useState([]);
+  const [questionAnswers, setQuestionAnswers] = useState([]);
   const [currentUser, setCurrentUser] = useState(() => localStorage.getItem("sc_user") || null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -108,25 +105,38 @@ export default function App() {
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, []);
 
   const loadAll = async () => {
-    const [m, s, b] = await Promise.all([
+    const [m, s, b, p, a, q, qa] = await Promise.all([
       sbGet("members", "select=name&order=created_at.asc"),
       sbGet("submissions", "select=*&order=created_at.desc"),
       sbGet("bonuses", "select=*&order=id.desc"),
+      sbGet("prizes", "select=*&order=id.asc"),
+      sbGet("announcements", "select=message&id=eq.1"),
+      sbGet("questions", "select=*&order=created_at.desc"),
+      sbGet("question_answers", "select=*&order=created_at.desc"),
     ]);
     setMembers(Array.isArray(m) ? m.map(x => x.name) : []);
     setSubmissions(Array.isArray(s) ? s : []);
     setBonuses(Array.isArray(b) ? b : []);
+    setPrizes(Array.isArray(p) ? p : []);
+    setAnnouncement(Array.isArray(a) && a[0] ? a[0].message || "" : "");
+    setQuestions(Array.isArray(q) ? q : []);
+    setQuestionAnswers(Array.isArray(qa) ? qa : []);
     setLoading(false);
   };
 
   useEffect(() => { loadAll(); const t = setInterval(loadAll, 15000); return () => clearInterval(t); }, []);
 
-  const getPoints = (name) => submissions.filter(s => s.member === name && s.status === "approved").reduce((sum, s) => sum + s.points, 0);
+  const getPoints = (name) => {
+    const subPts = submissions.filter(s => s.member === name && s.status === "approved").reduce((sum, s) => sum + s.points, 0);
+    const qPts = questionAnswers.filter(a => a.member === name && a.status === "approved").reduce((sum, a) => sum + a.points, 0);
+    return subPts + qPts;
+  };
+
   const leaderboard = [...members].map(m => ({ name: m, points: getPoints(m) })).sort((a, b) => b.points - a.points);
   const totalPoints = leaderboard.reduce((s, m) => s + m.points, 0);
-
   const now = new Date();
   const activeBonuses = bonuses.filter(b => b.active && new Date(b.start_time) <= now && new Date(b.end_time) > now && !b.claimed_by);
+  const activeQuestions = questions.filter(q => q.active);
 
   const approveSubmission = async (id) => {
     const sub = submissions.find(s => s.id === id);
@@ -134,18 +144,19 @@ export default function App() {
     if (sub?.bonus_id) await sbUpdate("bonuses", { id: sub.bonus_id }, { claimed_by: sub.member });
     loadAll();
   };
-
-  const rejectSubmission = async (id) => {
-    await sbUpdate("submissions", { id }, { status: "rejected" });
+  const rejectSubmission = async (id) => { await sbUpdate("submissions", { id }, { status: "rejected" }); loadAll(); };
+  const deleteSubmission = async (id) => { await sbDelete("submissions", { id }); loadAll(); };
+  const deleteMember = async (name) => {
+    await sbDelete("members", { name });
+    await sbDelete("submissions", { member: name });
+    await sbDelete("question_answers", { member: name });
+    if (currentUser === name) { setCurrentUser(null); localStorage.removeItem("sc_user"); }
     loadAll();
   };
 
   if (loading) return (
     <div style={{ ...S.root, alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-      <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 60 }}>🌙</div>
-        <div style={{ color: "#60a5fa", fontSize: 18, fontWeight: 700, marginTop: 16 }}>Loading Night Crew...</div>
-      </div>
+      <div style={{ textAlign: "center" }}><div style={{ fontSize: 60 }}>🌙</div><div style={{ color: "#60a5fa", fontSize: 18, fontWeight: 700, marginTop: 16 }}>Loading Night Crew...</div></div>
     </div>
   );
 
@@ -154,25 +165,25 @@ export default function App() {
       <div style={S.app}>
         <Header screen={screen} setScreen={setScreen} currentUser={currentUser} isAdmin={isAdmin} setIsAdmin={setIsAdmin} />
         <div style={S.content}>
-          {screen === "home" && <HomeScreen setScreen={setScreen} leaderboard={leaderboard} totalPoints={totalPoints} activeBonuses={activeBonuses} />}
+          {screen === "home" && <HomeScreen setScreen={setScreen} leaderboard={leaderboard} totalPoints={totalPoints} activeBonuses={activeBonuses} announcement={announcement} activeQuestions={activeQuestions} />}
           {screen === "join" && <JoinScreen members={members} setCurrentUser={setCurrentUser} setScreen={setScreen} loadAll={loadAll} />}
           {screen === "rules" && <RulesScreen />}
           {screen === "submit" && currentUser && <SubmitScreen currentUser={currentUser} submissions={submissions} activeBonuses={activeBonuses} loadAll={loadAll} />}
           {screen === "submit" && !currentUser && <GateScreen setScreen={setScreen} />}
           {screen === "leaderboard" && <LeaderboardScreen leaderboard={leaderboard} totalPoints={totalPoints} />}
-          {screen === "prizes" && <PrizesScreen />}
-          {screen === "bonuses" && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} />}
-          {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} />}
+          {screen === "prizes" && <PrizesScreen prizes={prizes} />}
+          {screen === "bonuses" && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} />}
+          {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} />}
           {screen === "adminlogin" && <AdminLogin setIsAdmin={setIsAdmin} setScreen={setScreen} />}
         </div>
-        <BottomNav screen={screen} setScreen={setScreen} isAdmin={isAdmin} activeBonuses={activeBonuses} />
+        <BottomNav screen={screen} setScreen={setScreen} isAdmin={isAdmin} activeBonuses={activeBonuses} activeQuestions={activeQuestions} />
       </div>
     </div>
   );
 }
 
 function Header({ screen, setScreen, currentUser, isAdmin, setIsAdmin }) {
-  const titles = { home: "Night Crew Challenge", join: "Join the Team", rules: "Rules & Points", submit: "Submit Proof", leaderboard: "Leaderboard", prizes: "Prizes", admin: "Admin Panel", adminlogin: "Admin Login", bonuses: "🔥 Bonus Challenges" };
+  const titles = { home: "Night Crew Challenge", join: "Join the Team", rules: "Rules & Points", submit: "Submit Proof", leaderboard: "Leaderboard", prizes: "Prizes", admin: "Admin Panel", adminlogin: "Admin Login", bonuses: "🔥 Bonus & Questions" };
   return (
     <div style={S.header}>
       <div style={S.headerLeft}>
@@ -184,18 +195,18 @@ function Header({ screen, setScreen, currentUser, isAdmin, setIsAdmin }) {
       </div>
       {!isAdmin
         ? <button style={S.adminBtn} onClick={() => setScreen("adminlogin")}>Admin</button>
-        : <button style={{ ...S.adminBtn, background: "#16a34a", color: "#fff" }} onClick={() => { setIsAdmin(false); setScreen("home"); }}>Exit Admin</button>
-      }
+        : <button style={{ ...S.adminBtn, background: "#16a34a", color: "#fff" }} onClick={() => { setIsAdmin(false); setScreen("home"); }}>Exit Admin</button>}
     </div>
   );
 }
 
-function BottomNav({ screen, setScreen, isAdmin, activeBonuses }) {
+function BottomNav({ screen, setScreen, isAdmin, activeBonuses, activeQuestions }) {
+  const hasDot = activeBonuses.length > 0 || activeQuestions.length > 0;
   const tabs = [
     { id: "home", icon: "🏠", label: "Home" },
     { id: "leaderboard", icon: "🏆", label: "Board" },
     { id: "submit", icon: "📸", label: "Submit" },
-    { id: "bonuses", icon: "🔥", label: "Bonus", dot: activeBonuses.length > 0 },
+    { id: "bonuses", icon: "🔥", label: "Bonus", dot: hasDot },
     { id: "prizes", icon: "🎁", label: "Prizes" },
   ];
   if (isAdmin) tabs.push({ id: "admin", icon: "⚙️", label: "Admin" });
@@ -203,10 +214,7 @@ function BottomNav({ screen, setScreen, isAdmin, activeBonuses }) {
     <div style={S.bottomNav}>
       {tabs.map(t => (
         <button key={t.id} style={{ ...S.navTab, ...(screen === t.id ? S.navTabActive : {}) }} onClick={() => setScreen(t.id)}>
-          <span style={{ fontSize: 20, position: "relative" }}>
-            {t.icon}
-            {t.dot && <span style={S.pulseDot} />}
-          </span>
+          <span style={{ fontSize: 20, position: "relative" }}>{t.icon}{t.dot && <span style={S.pulseDot} />}</span>
           <span style={S.navLabel}>{t.label}</span>
         </button>
       ))}
@@ -224,7 +232,7 @@ function GateScreen({ setScreen }) {
   );
 }
 
-function HomeScreen({ setScreen, leaderboard, totalPoints, activeBonuses }) {
+function HomeScreen({ setScreen, leaderboard, totalPoints, activeBonuses, announcement, activeQuestions }) {
   const medals = ["🥇", "🥈", "🥉"];
   return (
     <div style={{ padding: 16 }}>
@@ -235,12 +243,24 @@ function HomeScreen({ setScreen, leaderboard, totalPoints, activeBonuses }) {
         <div style={{ marginTop: 12, background: "rgba(255,255,255,0.15)", borderRadius: 20, padding: "4px 16px", display: "inline-block", color: "#fff", fontSize: 14, fontWeight: 600 }}>{totalPoints} total team pts</div>
       </div>
 
-      {activeBonuses.length > 0 && (
+      {announcement && (
+        <div style={S.announcementBox}>
+          <div style={S.announcementIcon}>📣</div>
+          <div style={S.announcementText}>{announcement}</div>
+        </div>
+      )}
+
+      {(activeBonuses.length > 0 || activeQuestions.length > 0) && (
         <div style={S.bonusAlert} onClick={() => setScreen("bonuses")}>
           <span style={{ fontSize: 32 }}>🔥</span>
           <div style={{ flex: 1 }}>
-            <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{activeBonuses.length} Active Bonus{activeBonuses.length > 1 ? "es" : ""}!</div>
-            <div style={{ color: "#fca5a5", fontSize: 12 }}>First to complete wins — tap to see</div>
+            <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>
+              {activeBonuses.length > 0 && `${activeBonuses.length} Bonus${activeBonuses.length > 1 ? "es" : ""}`}
+              {activeBonuses.length > 0 && activeQuestions.length > 0 && " · "}
+              {activeQuestions.length > 0 && `${activeQuestions.length} Question${activeQuestions.length > 1 ? "s" : ""}`}
+              {" Active!"}
+            </div>
+            <div style={{ color: "#fca5a5", fontSize: 12 }}>Earn bonus points — tap to see</div>
           </div>
           <span style={{ color: "#fbbf24", fontSize: 18 }}>→</span>
         </div>
@@ -276,53 +296,158 @@ function HomeScreen({ setScreen, leaderboard, totalPoints, activeBonuses }) {
   );
 }
 
-function BonusesScreen({ bonuses, activeBonuses }) {
+function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questionAnswers, loadAll, setScreen }) {
+  const [activeTab, setActiveTab] = useState("bonuses");
   const expired = bonuses.filter(b => b.claimed_by || new Date(b.end_time) <= new Date());
+
   return (
     <div style={{ padding: 16 }}>
-      <div style={{ ...S.rulesHero, background: "linear-gradient(135deg,#7f1d1d,#dc2626)" }}>
-        <div style={{ color: "#fff", fontWeight: 800, fontSize: 22 }}>🔥 Bonus Challenges</div>
-        <div style={{ color: "#fca5a5", fontSize: 13, marginTop: 4 }}>First to complete wins — limited time only!</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button style={{ ...S.tabBtn, ...(activeTab === "bonuses" ? S.tabBtnActive : {}) }} onClick={() => setActiveTab("bonuses")}>🔥 Bonuses</button>
+        <button style={{ ...S.tabBtn, ...(activeTab === "questions" ? S.tabBtnActive : {}) }} onClick={() => setActiveTab("questions")}>❓ Questions</button>
       </div>
-      {activeBonuses.length === 0 && <div style={S.emptyMsg}>No active bonuses right now.<br />Check back later! 👀</div>}
-      {activeBonuses.map(b => {
-        const tl = getTimeLeft(b.end_time);
-        const urgent = tl && !tl.includes("h") && !tl.includes("m ");
-        return (
-          <div key={b.id} style={{ ...S.bonusCard, ...(urgent ? { border: "2px solid #ef4444", background: "linear-gradient(135deg,#450a0a,#7f1d1d)" } : {}) }}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-              <span style={{ fontSize: 36 }}>{b.icon || "⭐"}</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ color: "#fff", fontWeight: 700, fontSize: 17 }}>{b.label}</div>
-                {b.description && <div style={{ color: "#fca5a5", fontSize: 13, marginTop: 3 }}>{b.description}</div>}
-              </div>
-              <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 26, textAlign: "right", lineHeight: 1.1 }}>+{b.points}<br /><span style={{ fontSize: 11, fontWeight: 400, color: "#fca5a5" }}>pts</span></div>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-              <span style={{ background: urgent ? "#dc2626" : "#b45309", color: "#fff", borderRadius: 20, padding: "4px 12px", fontSize: 12, fontWeight: 700 }}>⏱ {tl}</span>
-              <span style={{ color: "#94a3b8", fontSize: 12 }}>🏁 First to complete wins!</span>
-            </div>
-          </div>
-        );
-      })}
-      {expired.length > 0 && (
+
+      {activeTab === "bonuses" && (
         <>
-          <div style={{ ...S.sectionTitle, marginTop: 24 }}>Past Bonuses</div>
-          {expired.map(b => (
-            <div key={b.id} style={{ ...S.bonusCard, opacity: 0.5 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <span style={{ fontSize: 28 }}>{b.icon || "⭐"}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{b.label}</div>
-                  {b.claimed_by ? <div style={{ color: "#4ade80", fontSize: 13 }}>🏆 Claimed by {b.claimed_by}</div>
-                    : <div style={{ color: "#f87171", fontSize: 13 }}>⏰ Expired — unclaimed</div>}
+          <div style={{ ...S.rulesHero, background: "linear-gradient(135deg,#7f1d1d,#dc2626)", marginBottom: 16 }}>
+            <div style={{ color: "#fff", fontWeight: 800, fontSize: 20 }}>🔥 Bonus Challenges</div>
+            <div style={{ color: "#fca5a5", fontSize: 13, marginTop: 4 }}>First to complete wins!</div>
+          </div>
+          {activeBonuses.length === 0 && <div style={S.emptyMsg}>No active bonuses right now. 👀</div>}
+          {activeBonuses.map(b => {
+            const tl = getTimeLeft(b.end_time);
+            const urgent = tl && !tl.includes("h") && !tl.includes("m ");
+            return (
+              <div key={b.id} style={{ ...S.bonusCard, ...(urgent ? { border: "2px solid #ef4444", background: "linear-gradient(135deg,#450a0a,#7f1d1d)" } : {}) }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                  <span style={{ fontSize: 36 }}>{b.icon || "⭐"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ color: "#fff", fontWeight: 700, fontSize: 17 }}>{b.label}</div>
+                    {b.description && <div style={{ color: "#fca5a5", fontSize: 13, marginTop: 3 }}>{b.description}</div>}
+                  </div>
+                  <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 26, textAlign: "right", lineHeight: 1.1 }}>+{b.points}<br /><span style={{ fontSize: 11, fontWeight: 400, color: "#fca5a5" }}>pts</span></div>
                 </div>
-                <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 20 }}>+{b.points}</div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+                  <span style={{ background: urgent ? "#dc2626" : "#b45309", color: "#fff", borderRadius: 20, padding: "4px 12px", fontSize: 12, fontWeight: 700 }}>⏱ {tl}</span>
+                  <span style={{ color: "#94a3b8", fontSize: 12 }}>🏁 First to complete wins!</span>
+                </div>
               </div>
+            );
+          })}
+          {expired.length > 0 && (
+            <>
+              <div style={{ ...S.sectionTitle, marginTop: 24 }}>Past Bonuses</div>
+              {expired.map(b => (
+                <div key={b.id} style={{ ...S.bonusCard, opacity: 0.5 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <span style={{ fontSize: 28 }}>{b.icon || "⭐"}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{b.label}</div>
+                      {b.claimed_by ? <div style={{ color: "#4ade80", fontSize: 13 }}>🏆 Claimed by {b.claimed_by}</div>
+                        : <div style={{ color: "#f87171", fontSize: 13 }}>⏰ Expired</div>}
+                    </div>
+                    <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 20 }}>+{b.points}</div>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </>
+      )}
+
+      {activeTab === "questions" && (
+        <>
+          <div style={{ ...S.rulesHero, background: "linear-gradient(135deg,#1e3a5f,#4c1d95)", marginBottom: 16 }}>
+            <div style={{ color: "#fff", fontWeight: 800, fontSize: 20 }}>❓ Daily Questions</div>
+            <div style={{ color: "#c4b5fd", fontSize: 13, marginTop: 4 }}>Answer to earn bonus points!</div>
+          </div>
+          {questions.length === 0 && <div style={S.emptyMsg}>No questions right now. Check back later! 📚</div>}
+          {!currentUser && questions.length > 0 && (
+            <div style={S.gateBox}>
+              <div style={{ fontSize: 40 }}>🔒</div>
+              <p style={{ color: "#94a3b8", fontSize: 15, textAlign: "center" }}>Join the team to answer questions!</p>
+              <button style={S.btnPrimary} onClick={() => setScreen("join")}>Join Now</button>
             </div>
+          )}
+          {currentUser && questions.map(q => (
+            <QuestionCard key={q.id} q={q} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} />
           ))}
         </>
       )}
+    </div>
+  );
+}
+
+function QuestionCard({ q, currentUser, questionAnswers, loadAll }) {
+  const today = todayStr();
+  const myAnswer = questionAnswers.find(a => a.question_id === q.id && a.member === currentUser && a.answered_at === today);
+  const [selected, setSelected] = useState("");
+  const [shortAnswer, setShortAnswer] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+  const [result, setResult] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async () => {
+    const answer = q.type === "multiple_choice" ? selected : shortAnswer;
+    if (!answer) return;
+    setSaving(true);
+    let status = "pending";
+    let correct = false;
+    if (q.type === "multiple_choice") {
+      correct = answer.trim().toLowerCase() === q.correct_answer.trim().toLowerCase();
+      status = correct ? "approved" : "rejected";
+      setResult(correct);
+    }
+    await sbInsert("question_answers", {
+      id: Date.now(), question_id: q.id, member: currentUser,
+      answer, status, points: correct || q.type === "short_answer" ? q.points : 0,
+      answered_at: today
+    });
+    await loadAll();
+    setSubmitted(true);
+    setSaving(false);
+  };
+
+  if (myAnswer || submitted) {
+    const ans = myAnswer || { status: q.type === "multiple_choice" ? (result ? "approved" : "rejected") : "pending", answer: selected || shortAnswer };
+    return (
+      <div style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 15, marginBottom: 8 }}>{q.question}</div>
+        <div style={{ color: "#64748b", fontSize: 13, marginBottom: 8 }}>Your answer: <span style={{ color: "#e2e8f0" }}>{ans.answer}</span></div>
+        {q.type === "multiple_choice" && (
+          <div style={{ padding: "8px 14px", borderRadius: 10, background: ans.status === "approved" ? "#065f46" : "#7f1d1d", color: ans.status === "approved" ? "#d1fae5" : "#fecaca", fontWeight: 700, fontSize: 14, display: "inline-block" }}>
+            {ans.status === "approved" ? `✅ Correct! +${q.points} pts` : `❌ Incorrect. Correct: ${q.correct_answer}`}
+          </div>
+        )}
+        {q.type === "short_answer" && (
+          <div style={{ padding: "8px 14px", borderRadius: 10, background: ans.status === "approved" ? "#065f46" : ans.status === "rejected" ? "#7f1d1d" : "#1e3a5f", color: ans.status === "approved" ? "#d1fae5" : ans.status === "rejected" ? "#fecaca" : "#bfdbfe", fontWeight: 700, fontSize: 14, display: "inline-block" }}>
+            {ans.status === "approved" ? `✅ Approved! +${q.points} pts` : ans.status === "rejected" ? "❌ Not approved" : "⏳ Pending review"}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 12, border: "1px solid #334155" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+        <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 15, flex: 1 }}>{q.question}</div>
+        <span style={{ background: "#7c3aed", color: "#fff", borderRadius: 20, padding: "3px 10px", fontSize: 12, fontWeight: 700, marginLeft: 8, whiteSpace: "nowrap" }}>+{q.points} pts</span>
+      </div>
+      {q.type === "multiple_choice" && q.options && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {q.options.map((opt, i) => (
+            <button key={i} style={{ background: selected === opt ? "#1d4ed8" : "#0f172a", border: `2px solid ${selected === opt ? "#3b82f6" : "#334155"}`, borderRadius: 10, padding: "10px 14px", color: selected === opt ? "#fff" : "#e2e8f0", fontSize: 14, textAlign: "left", cursor: "pointer" }}
+              onClick={() => setSelected(opt)}>{opt}</button>
+          ))}
+        </div>
+      )}
+      {q.type === "short_answer" && (
+        <input style={S.input} placeholder="Type your answer..." value={shortAnswer} onChange={e => setShortAnswer(e.target.value)} />
+      )}
+      <button style={{ ...S.btnPrimary, marginTop: 12, opacity: saving ? 0.6 : 1 }} onClick={handleSubmit} disabled={saving || (!selected && !shortAnswer)}>
+        {saving ? "Submitting..." : "Submit Answer"}
+      </button>
     </div>
   );
 }
@@ -338,10 +463,7 @@ function JoinScreen({ members, setCurrentUser, setScreen, loadAll }) {
     if (!name.trim()) { setError("Enter your name."); return; }
     if (code.trim().toUpperCase() !== JOIN_CODE) { setError("Wrong team code. Ask your team lead!"); return; }
     setSaving(true);
-    if (!members.includes(name.trim())) {
-      await sbInsert("members", { name: name.trim() });
-      await loadAll();
-    }
+    if (!members.includes(name.trim())) { await sbInsert("members", { name: name.trim() }); await loadAll(); }
     localStorage.setItem("sc_user", name.trim());
     setCurrentUser(name.trim());
     setSuccess(true);
@@ -368,7 +490,7 @@ function JoinScreen({ members, setCurrentUser, setScreen, loadAll }) {
         {error && <div style={S.errorMsg}>{error}</div>}
         <button style={{ ...S.btnPrimary, opacity: saving ? 0.6 : 1 }} onClick={handleJoin} disabled={saving}>{saving ? "Joining..." : "Join Team 🚀"}</button>
       </div>
-<div style={S.hintBox}><strong>Team Code:</strong> <code style={S.codeChip}>{JOIN_CODE}</code></div>
+      <div style={S.hintBox}><strong>Team Code:</strong> <code style={S.codeChip}>{JOIN_CODE}</code></div>
     </div>
   );
 }
@@ -398,9 +520,10 @@ function RulesScreen() {
         <ol style={{ color: "#94a3b8", fontSize: 14, lineHeight: 2, paddingLeft: 20, margin: 0 }}>
           <li>Join the team with your code</li>
           <li>Complete a task on the floor</li>
-          <li>Take a before & after photo</li>
+          <li>Take or upload a before & after photo</li>
           <li>Submit in the app for approval</li>
           <li>Team lead approves → points added!</li>
+          <li>Answer daily questions for bonus points</li>
           <li>Redeem individually or pool with the team</li>
         </ol>
       </div>
@@ -441,10 +564,10 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
     }
     setSaving(true);
     await sbInsert("submissions", {
-  member: currentUser, challenge_label: label, points,
-  bonus_id: subBonusId, before_img: beforeImg, after_img: afterImg,
-  note, status: "pending", date: new Date().toLocaleString()
-});
+      member: currentUser, challenge_label: label, points,
+      bonus_id: subBonusId, before_img: beforeImg, after_img: afterImg,
+      note, status: "pending", date: new Date().toLocaleString()
+    });
     await loadAll();
     setSubmitted(true); setSaving(false);
     setChallenge(""); setBonusId(""); setBeforeImg(null); setAfterImg(null); setNote("");
@@ -466,8 +589,7 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
         {activeBonuses.length > 0 && (
           <>
             <label style={S.label}>🔥 Active Bonus (optional)</label>
-            <select style={{ ...S.input, borderColor: bonusId ? "#f59e0b" : "#334155" }} value={bonusId}
-              onChange={e => { setBonusId(e.target.value); setChallenge(""); setError(""); }}>
+            <select style={{ ...S.input, borderColor: bonusId ? "#f59e0b" : "#334155" }} value={bonusId} onChange={e => { setBonusId(e.target.value); setChallenge(""); setError(""); }}>
               <option value="">— No bonus —</option>
               {activeBonuses.map(b => <option key={b.id} value={b.id}>{b.icon || "⭐"} {b.label} (+{b.points} pts)</option>)}
             </select>
@@ -482,13 +604,28 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
             </select>
           </>
         )}
-        <div style={{ display: "flex", gap: 12, marginTop: 14 }}>
+        <label style={S.label}>Photos (Before & After)</label>
+        <div style={{ display: "flex", gap: 12 }}>
           {["before", "after"].map(type => (
-            <div key={type} style={S.photoBox} onClick={() => (type === "before" ? beforeRef : afterRef).current.click()}>
-              {(type === "before" ? beforeImg : afterImg)
-                ? <img src={type === "before" ? beforeImg : afterImg} alt={type} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                : <><div style={{ fontSize: 32 }}>📷</div><div style={{ color: "#475569", fontSize: 12, fontWeight: 700, marginTop: 4 }}>{type.toUpperCase()}</div></>}
-              <input ref={type === "before" ? beforeRef : afterRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={e => handleImg(e, type)} />
+            <div key={type} style={{ flex: 1 }}>
+              <div style={S.photoBox} onClick={() => (type === "before" ? beforeRef : afterRef).current.click()}>
+                {(type === "before" ? beforeImg : afterImg)
+                  ? <img src={type === "before" ? beforeImg : afterImg} alt={type} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  : <><div style={{ fontSize: 28 }}>📷</div><div style={{ color: "#475569", fontSize: 11, fontWeight: 700, marginTop: 4 }}>{type.toUpperCase()}</div><div style={{ color: "#334155", fontSize: 10, marginTop: 2 }}>tap to upload</div></>}
+                <input ref={type === "before" ? beforeRef : afterRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleImg(e, type)} />
+              </div>
+              <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
+                <button style={S.photoOptionBtn} onClick={() => {
+                  const inp = type === "before" ? beforeRef : afterRef;
+                  inp.current.removeAttribute("capture");
+                  inp.current.click();
+                }}>📁 Gallery</button>
+                <button style={S.photoOptionBtn} onClick={() => {
+                  const inp = type === "before" ? beforeRef : afterRef;
+                  inp.current.setAttribute("capture", "environment");
+                  inp.current.click();
+                }}>📷 Camera</button>
+              </div>
             </div>
           ))}
         </div>
@@ -545,21 +682,25 @@ function LeaderboardScreen({ leaderboard, totalPoints }) {
   );
 }
 
-function PrizesScreen() {
+function PrizesScreen({ prizes }) {
+  const individual = prizes.filter(p => p.individual && p.active);
+  const team = prizes.filter(p => !p.individual && p.active);
   return (
     <div style={{ padding: 16 }}>
       <div style={{ background: "linear-gradient(135deg,#4c1d95,#7c3aed)", borderRadius: 20, padding: "24px 20px", textAlign: "center", marginBottom: 20 }}>
         <div style={{ color: "#fff", fontWeight: 800, fontSize: 22 }}>🎁 Prize Shop</div>
         <div style={{ color: "#ddd6fe", fontSize: 13, marginTop: 4 }}>Spend your points or pool with the team!</div>
       </div>
-      {[{ title: "🙋 Individual Prizes", items: PRIZES.filter(p => p.individual), bg: "#1e293b" },
-        { title: "👥 Team Prizes (Pool Points)", items: PRIZES.filter(p => !p.individual), bg: "linear-gradient(135deg,#1e3a5f,#1e40af)" }
+      {[{ title: "🙋 Individual Prizes", items: individual, bg: "#1e293b" },
+        { title: "👥 Team Prizes (Pool Points)", items: team, bg: "linear-gradient(135deg,#1e3a5f,#1e40af)" }
       ].map(section => (
         <div key={section.title} style={{ marginBottom: 20 }}>
           <div style={S.sectionTitle}>{section.title}</div>
+          {section.items.length === 0 && <div style={{ color: "#64748b", fontSize: 13, padding: "8px 0" }}>No prizes yet.</div>}
           {section.items.map(p => (
-            <div key={p.label} style={{ background: section.bg, borderRadius: 14, padding: "16px 20px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ color: "#f1f5f9", fontWeight: 600, fontSize: 15 }}>{p.label}</span>
+            <div key={p.id} style={{ background: section.bg, borderRadius: 14, padding: "16px 20px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ color: p.mystery ? "transparent" : "#f1f5f9", fontWeight: 600, fontSize: 15, flex: 1, filter: p.mystery ? "blur(6px)" : "none", userSelect: p.mystery ? "none" : "auto" }}>{p.mystery ? "Mystery Prize 🎁" : p.label}</span>
+              {p.mystery && <span style={{ color: "#f1f5f9", fontWeight: 600, fontSize: 13, marginRight: 8 }}>🎁 Mystery</span>}
               <span style={{ background: "#7c3aed", color: "#fff", borderRadius: 20, padding: "4px 14px", fontSize: 13, fontWeight: 700 }}>{p.cost} pts</span>
             </div>
           ))}
@@ -585,19 +726,23 @@ function AdminLogin({ setIsAdmin, setScreen }) {
         {error && <div style={S.errorMsg}>{error}</div>}
         <button style={S.btnPrimary} onClick={() => { if (code.trim().toUpperCase() === ADMIN_CODE) { setIsAdmin(true); setScreen("admin"); } else setError("Wrong code."); }}>Login</button>
       </div>
-      
     </div>
   );
 }
 
-function AdminScreen({ submissions, approveSubmission, rejectSubmission, leaderboard, bonuses, loadAll }) {
+function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteSubmission, leaderboard, bonuses, loadAll, prizes, announcement, members, deleteMember, questions, questionAnswers }) {
   const pending = submissions.filter(s => s.status === "pending");
   const reviewed = submissions.filter(s => s.status !== "pending");
+  const pendingQA = questionAnswers.filter(a => a.status === "pending");
   const [tab, setTab] = useState("pending");
+
   return (
     <div style={{ padding: 16 }}>
       <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-        {[{ label: "Pending", val: pending.length, color: "#ef4444" }, { label: "Approved", val: submissions.filter(s => s.status === "approved").length, color: "#10b981" }, { label: "Total Pts", val: leaderboard.reduce((s, m) => s + m.points, 0), color: "#60a5fa" }].map(st => (
+        {[{ label: "Pending", val: pending.length + pendingQA.length, color: "#ef4444" },
+          { label: "Approved", val: submissions.filter(s => s.status === "approved").length, color: "#10b981" },
+          { label: "Total Pts", val: leaderboard.reduce((s, m) => s + m.points, 0), color: "#60a5fa" }
+        ].map(st => (
           <div key={st.label} style={{ flex: 1, background: "#1e293b", borderRadius: 14, padding: "16px 12px", textAlign: "center" }}>
             <div style={{ color: st.color, fontWeight: 800, fontSize: 28 }}>{st.val}</div>
             <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{st.label}</div>
@@ -605,18 +750,285 @@ function AdminScreen({ submissions, approveSubmission, rejectSubmission, leaderb
         ))}
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-        {[["pending", `Pending${pending.length > 0 ? ` (${pending.length})` : ""}`], ["reviewed", "Reviewed"], ["bonuses", "🔥 Bonuses"], ["board", "Standings"]].map(([id, label]) => (
-          <button key={id} style={{ ...S.tabBtn, ...(tab === id ? S.tabBtnActive : {}) }} onClick={() => setTab(id)}>{label}</button>
+        {[["pending", `Pending${(pending.length + pendingQA.length) > 0 ? ` (${pending.length + pendingQA.length})` : ""}`],
+          ["reviewed", "Reviewed"], ["bonuses", "🔥 Bonuses"], ["questions", "❓ Questions"],
+          ["prizes", "🎁 Prizes"], ["announce", "📣 Announce"], ["members", "👥 Members"], ["board", "Standings"]
+        ].map(([id, label]) => (
+          <button key={id} style={{ ...S.tabBtn, ...(tab === id ? S.tabBtnActive : {}), fontSize: 11 }} onClick={() => setTab(id)}>{label}</button>
         ))}
       </div>
-      {tab === "pending" && (pending.length === 0 ? <div style={S.emptyMsg}>No pending submissions 🎉</div> : pending.map(s => <ReviewCard key={s.id} s={s} approve={approveSubmission} reject={rejectSubmission} />))}
-      {tab === "reviewed" && (reviewed.length === 0 ? <div style={S.emptyMsg}>No reviewed submissions yet.</div> : reviewed.map(s => <ReviewCard key={s.id} s={s} readonly />))}
+
+      {tab === "pending" && (
+        <>
+          {pending.length === 0 && pendingQA.length === 0 && <div style={S.emptyMsg}>No pending submissions 🎉</div>}
+          {pending.map(s => <ReviewCard key={s.id} s={s} approve={approveSubmission} reject={rejectSubmission} onDelete={deleteSubmission} />)}
+          {pendingQA.map(a => <QAReviewCard key={a.id} a={a} questions={questions} loadAll={loadAll} />)}
+        </>
+      )}
+      {tab === "reviewed" && (reviewed.length === 0 ? <div style={S.emptyMsg}>No reviewed submissions yet.</div> : reviewed.map(s => <ReviewCard key={s.id} s={s} readonly onDelete={deleteSubmission} />))}
       {tab === "bonuses" && <AdminBonuses bonuses={bonuses} loadAll={loadAll} />}
+      {tab === "questions" && <AdminQuestions questions={questions} questionAnswers={questionAnswers} loadAll={loadAll} />}
+      {tab === "prizes" && <AdminPrizes prizes={prizes} loadAll={loadAll} />}
+      {tab === "announce" && <AdminAnnouncement announcement={announcement} loadAll={loadAll} />}
+      {tab === "members" && <AdminMembers members={members} leaderboard={leaderboard} deleteMember={deleteMember} submissions={submissions} questionAnswers={questionAnswers} />}
       {tab === "board" && leaderboard.map((m, i) => (
         <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 14, background: "#1e293b", borderRadius: 12, padding: "14px 16px", marginBottom: 8 }}>
           <span style={{ fontSize: 20 }}>{["🥇","🥈","🥉"][i] || `#${i+1}`}</span>
           <span style={{ flex: 1, color: "#f1f5f9", fontWeight: 700, fontSize: 16 }}>{m.name}</span>
           <span style={{ color: "#60a5fa", fontWeight: 800, fontSize: 18 }}>{m.points} pts</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdminAnnouncement({ announcement, loadAll }) {
+  const [msg, setMsg] = useState(announcement);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    await sbUpdate("announcements", { id: 1 }, { message: msg, updated_at: new Date().toISOString() });
+    await loadAll();
+    setSaved(true); setSaving(false);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div style={{ background: "#1e293b", borderRadius: 16, padding: 20 }}>
+      <div style={{ color: "#f1f5f9", fontWeight: 800, fontSize: 18, marginBottom: 16 }}>📣 Home Announcement</div>
+      <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 12 }}>This message appears on the home screen for the whole team. Use it for tips, quotes, shoutouts, or reminders. Leave blank to hide it.</div>
+      <textarea style={{ ...S.input, minHeight: 100, resize: "vertical", fontFamily: "inherit" }}
+        placeholder="e.g. Great work tonight team! Keep pushing 💪" value={msg} onChange={e => setMsg(e.target.value)} />
+      <button style={{ ...S.btnPrimary, marginTop: 12, opacity: saving ? 0.6 : 1 }} onClick={handleSave} disabled={saving}>
+        {saved ? "✅ Saved!" : saving ? "Saving..." : "💾 Save Announcement"}
+      </button>
+      {msg && (
+        <>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 16, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>Preview</div>
+          <div style={S.announcementBox}>
+            <div style={S.announcementIcon}>📣</div>
+            <div style={S.announcementText}>{msg}</div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AdminPrizes({ prizes, loadAll }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState({ label: "", cost: "", individual: true, mystery: false });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const resetForm = () => { setForm({ label: "", cost: "", individual: true, mystery: false }); setEditId(null); setError(""); };
+
+  const openEdit = (p) => { setForm({ label: p.label, cost: String(p.cost), individual: p.individual, mystery: p.mystery }); setEditId(p.id); setShowForm(true); };
+
+  const handleSave = async () => {
+    if (!form.label.trim()) { setError("Add a prize name."); return; }
+    if (!form.cost || isNaN(form.cost) || parseInt(form.cost) <= 0) { setError("Enter valid points."); return; }
+    setSaving(true);
+    const data = { label: form.label, cost: parseInt(form.cost), individual: form.individual, mystery: form.mystery, active: true };
+    if (editId) { await sbUpdate("prizes", { id: editId }, data); }
+    else { await sbInsert("prizes", { id: Date.now(), ...data }); }
+    await loadAll(); setShowForm(false); resetForm(); setSaving(false);
+  };
+
+  return (
+    <div>
+      <button style={{ ...S.btnPrimary, marginBottom: 16, marginTop: 0 }} onClick={() => { resetForm(); setShowForm(true); }}>+ Add New Prize</button>
+      {showForm && (
+        <div style={{ background: "#1e293b", borderRadius: 16, padding: 20, marginBottom: 16 }}>
+          <div style={{ color: "#f1f5f9", fontWeight: 800, fontSize: 18, marginBottom: 16 }}>{editId ? "✏️ Edit Prize" : "✨ New Prize"}</div>
+          <label style={S.label}>Prize Name</label>
+          <input style={S.input} placeholder="e.g. Extra 15-min Break" value={form.label} onChange={e => { setForm(f => ({ ...f, label: e.target.value })); setError(""); }} />
+          <label style={S.label}>Points Required</label>
+          <input style={S.input} type="number" placeholder="e.g. 25" value={form.cost} onChange={e => { setForm(f => ({ ...f, cost: e.target.value })); setError(""); }} />
+          <div style={{ display: "flex", gap: 16, marginTop: 14 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#94a3b8", fontSize: 14, cursor: "pointer" }}>
+              <input type="checkbox" checked={form.individual} onChange={e => setForm(f => ({ ...f, individual: e.target.checked }))} />
+              Individual Prize
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#94a3b8", fontSize: 14, cursor: "pointer" }}>
+              <input type="checkbox" checked={form.mystery} onChange={e => setForm(f => ({ ...f, mystery: e.target.checked }))} />
+              🎁 Mystery (blurred)
+            </label>
+          </div>
+          {error && <div style={S.errorMsg}>{error}</div>}
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer", opacity: saving ? 0.6 : 1 }} onClick={handleSave} disabled={saving}>{saving ? "Saving..." : "💾 Save"}</button>
+            <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }} onClick={() => { setShowForm(false); resetForm(); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {prizes.length === 0 && !showForm && <div style={S.emptyMsg}>No prizes yet. Add your first one!</div>}
+      {prizes.map(p => (
+        <div key={p.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 15 }}>{p.label} {p.mystery ? "🎁" : ""}</div>
+              <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{p.individual ? "Individual" : "Team"} · {p.cost} pts{p.mystery ? " · Mystery" : ""}</div>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }} onClick={() => openEdit(p)}>✏️</button>
+              <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("prizes", { id: p.id }); loadAll(); }}>🗑</button>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdminMembers({ members, leaderboard, deleteMember, submissions, questionAnswers }) {
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  return (
+    <div>
+      <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 16 }}>Deleting a member removes them and all their submissions and answers from the app.</div>
+      {members.length === 0 && <div style={S.emptyMsg}>No members yet.</div>}
+      {members.map(m => {
+        const lb = leaderboard.find(l => l.name === m);
+        const subCount = submissions.filter(s => s.member === m).length;
+        const qaCount = questionAnswers.filter(a => a.member === m).length;
+        return (
+          <div key={m} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 15 }}>{m}</div>
+                <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{lb?.points || 0} pts · {subCount} submission{subCount !== 1 ? "s" : ""} · {qaCount} answer{qaCount !== 1 ? "s" : ""}</div>
+              </div>
+              {confirmDelete === m ? (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={{ background: "#7f1d1d", border: "none", color: "#fecaca", borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer", fontWeight: 700 }} onClick={() => { deleteMember(m); setConfirmDelete(null); }}>Confirm</button>
+                  <button style={{ background: "#334155", border: "none", color: "#94a3b8", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }} onClick={() => setConfirmDelete(null)}>Cancel</button>
+                </div>
+              ) : (
+                <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }} onClick={() => setConfirmDelete(m)}>🗑 Remove</button>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AdminQuestions({ questions, questionAnswers, loadAll }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState({ question: "", type: "multiple_choice", options: ["", "", "", ""], correctAnswer: "", points: "", active: true });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const pendingAnswers = questionAnswers.filter(a => a.status === "pending");
+
+  const resetForm = () => { setForm({ question: "", type: "multiple_choice", options: ["", "", "", ""], correctAnswer: "", points: "", active: true }); setEditId(null); setError(""); };
+
+  const openEdit = (q) => {
+    setForm({ question: q.question, type: q.type, options: q.options || ["", "", "", ""], correctAnswer: q.correct_answer || "", points: String(q.points), active: q.active });
+    setEditId(q.id); setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.question.trim()) { setError("Add a question."); return; }
+    if (!form.points || isNaN(form.points) || parseInt(form.points) <= 0) { setError("Enter valid points."); return; }
+    if (form.type === "multiple_choice") {
+      const opts = form.options.filter(o => o.trim());
+      if (opts.length < 2) { setError("Add at least 2 options."); return; }
+      if (!form.correctAnswer) { setError("Select the correct answer."); return; }
+    }
+    setSaving(true);
+    const opts = form.type === "multiple_choice" ? form.options.filter(o => o.trim()) : null;
+    const data = { question: form.question, type: form.type, options: opts, correct_answer: form.correctAnswer || null, points: parseInt(form.points), active: form.active };
+    if (editId) { await sbUpdate("questions", { id: editId }, data); }
+    else { await sbInsert("questions", { id: Date.now(), ...data }); }
+    await loadAll(); setShowForm(false); resetForm(); setSaving(false);
+  };
+
+  return (
+    <div>
+      <button style={{ ...S.btnPrimary, marginBottom: 16, marginTop: 0 }} onClick={() => { resetForm(); setShowForm(true); }}>+ Create New Question</button>
+
+      {pendingAnswers.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={S.sectionTitle}>⏳ Pending Short Answers</div>
+          {pendingAnswers.map(a => {
+            const q = questions.find(q => q.id === a.question_id);
+            return (
+              <div key={a.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10 }}>
+                <div style={{ color: "#60a5fa", fontWeight: 700 }}>{a.member}</div>
+                <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 4 }}>Q: {q?.question}</div>
+                <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 6, padding: "8px 12px", background: "#0f172a", borderRadius: 8 }}>{a.answer}</div>
+                <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                  <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                    onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "approved", points: a.points }); loadAll(); }}>✅ Approve +{a.points} pts</button>
+                  <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                    onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "rejected", points: 0 }); loadAll(); }}>❌ Reject</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {showForm && (
+        <div style={{ background: "#1e293b", borderRadius: 16, padding: 20, marginBottom: 16 }}>
+          <div style={{ color: "#f1f5f9", fontWeight: 800, fontSize: 18, marginBottom: 16 }}>{editId ? "✏️ Edit Question" : "✨ New Question"}</div>
+          <label style={S.label}>Type</label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+            {["multiple_choice", "short_answer"].map(t => (
+              <button key={t} style={{ flex: 1, background: form.type === t ? "#1d4ed8" : "#0f172a", border: `2px solid ${form.type === t ? "#3b82f6" : "#334155"}`, color: form.type === t ? "#fff" : "#94a3b8", borderRadius: 10, padding: "10px 0", fontSize: 13, cursor: "pointer", fontWeight: 600 }}
+                onClick={() => setForm(f => ({ ...f, type: t }))}>{t === "multiple_choice" ? "Multiple Choice" : "Short Answer"}</button>
+            ))}
+          </div>
+          <label style={S.label}>Question</label>
+          <input style={S.input} placeholder="e.g. What is the correct height for a front end cap?" value={form.question} onChange={e => { setForm(f => ({ ...f, question: e.target.value })); setError(""); }} />
+          {form.type === "multiple_choice" && (
+            <>
+              <label style={S.label}>Answer Options</label>
+              {form.options.map((opt, i) => (
+                <input key={i} style={{ ...S.input, marginBottom: 8 }} placeholder={`Option ${i + 1}`} value={opt} onChange={e => { const opts = [...form.options]; opts[i] = e.target.value; setForm(f => ({ ...f, options: opts })); }} />
+              ))}
+              <label style={S.label}>Correct Answer</label>
+              <select style={S.input} value={form.correctAnswer} onChange={e => { setForm(f => ({ ...f, correctAnswer: e.target.value })); setError(""); }}>
+                <option value="">— Select correct answer —</option>
+                {form.options.filter(o => o.trim()).map((opt, i) => <option key={i} value={opt}>{opt}</option>)}
+              </select>
+            </>
+          )}
+          <label style={S.label}>Points</label>
+          <input style={S.input} type="number" placeholder="e.g. 5" value={form.points} onChange={e => { setForm(f => ({ ...f, points: e.target.value })); setError(""); }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
+            <input type="checkbox" id="qActive" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} />
+            <label htmlFor="qActive" style={{ color: "#94a3b8", fontSize: 14, cursor: "pointer" }}>Active (visible to team)</label>
+          </div>
+          {error && <div style={S.errorMsg}>{error}</div>}
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer", opacity: saving ? 0.6 : 1 }} onClick={handleSave} disabled={saving}>{saving ? "Saving..." : "💾 Save Question"}</button>
+            <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }} onClick={() => { setShowForm(false); resetForm(); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {questions.length === 0 && !showForm && <div style={S.emptyMsg}>No questions yet. Create your first one!</div>}
+      {questions.map(q => (
+        <div key={q.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 14 }}>{q.question}</div>
+              <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>{q.type === "multiple_choice" ? "Multiple Choice" : "Short Answer"} · +{q.points} pts · {q.active ? <span style={{ color: "#4ade80" }}>Active</span> : <span style={{ color: "#f87171" }}>Inactive</span>}</div>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }} onClick={() => openEdit(q)}>✏️</button>
+              <button style={{ background: "#0f172a", border: "1px solid #334155", color: q.active ? "#f87171" : "#4ade80", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }}
+                onClick={async () => { await sbUpdate("questions", { id: q.id }, { active: !q.active }); loadAll(); }}>{q.active ? "⏸" : "▶️"}</button>
+              <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }}
+                onClick={async () => { await sbDelete("questions", { id: q.id }); loadAll(); }}>🗑</button>
+            </div>
+          </div>
         </div>
       ))}
     </div>
@@ -631,11 +1043,7 @@ function AdminBonuses({ bonuses, loadAll }) {
   const [saving, setSaving] = useState(false);
 
   const resetForm = () => { setForm({ label: "", description: "", points: "", icon: "⭐", startTime: "", endTime: "", active: true }); setEditId(null); setError(""); };
-
-  const openEdit = (b) => {
-    setForm({ label: b.label, description: b.description || "", points: String(b.points), icon: b.icon || "⭐", startTime: b.start_time, endTime: b.end_time, active: b.active });
-    setEditId(b.id); setShowForm(true);
-  };
+  const openEdit = (b) => { setForm({ label: b.label, description: b.description || "", points: String(b.points), icon: b.icon || "⭐", startTime: b.start_time, endTime: b.end_time, active: b.active }); setEditId(b.id); setShowForm(true); };
 
   const handleSave = async () => {
     if (!form.label.trim()) { setError("Add a title."); return; }
@@ -667,8 +1075,7 @@ function AdminBonuses({ bonuses, loadAll }) {
           <label style={S.label}>Icon</label>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
             {BONUS_ICONS.map(ic => (
-              <button key={ic} style={{ background: form.icon === ic ? "#292524" : "#0f172a", border: `2px solid ${form.icon === ic ? "#f59e0b" : "#334155"}`, borderRadius: 8, width: 40, height: 40, fontSize: 20, cursor: "pointer" }}
-                onClick={() => setForm(f => ({ ...f, icon: ic }))}>{ic}</button>
+              <button key={ic} style={{ background: form.icon === ic ? "#292524" : "#0f172a", border: `2px solid ${form.icon === ic ? "#f59e0b" : "#334155"}`, borderRadius: 8, width: 40, height: 40, fontSize: 20, cursor: "pointer" }} onClick={() => setForm(f => ({ ...f, icon: ic }))}>{ic}</button>
             ))}
           </div>
           <label style={S.label}>Title</label>
@@ -692,8 +1099,8 @@ function AdminBonuses({ bonuses, loadAll }) {
           </div>
         </div>
       )}
-      {bonuses.length === 0 && !showForm && <div style={S.emptyMsg}>No bonuses yet. Create your first one!</div>}
-      {[...bonuses].map(b => {
+      {bonuses.length === 0 && !showForm && <div style={S.emptyMsg}>No bonuses yet.</div>}
+      {bonuses.map(b => {
         const st = getStatus(b);
         return (
           <div key={b.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10 }}>
@@ -703,16 +1110,13 @@ function AdminBonuses({ bonuses, loadAll }) {
                 <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 15 }}>{b.label}</div>
                 {b.description && <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 2 }}>{b.description}</div>}
                 <div style={{ color: st.color, fontSize: 12, marginTop: 6 }}>● {st.label}</div>
-                <div style={{ color: "#64748b", fontSize: 11, marginTop: 2 }}>{new Date(b.start_time).toLocaleString()} → {new Date(b.end_time).toLocaleString()}</div>
               </div>
               <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 22 }}>+{b.points}</div>
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 10, borderTop: "1px solid #334155" }}>
               <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "8px 4px", fontSize: 12, cursor: "pointer" }} onClick={() => openEdit(b)}>✏️ Edit</button>
               <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: b.active ? "#f87171" : "#4ade80", borderRadius: 8, padding: "8px 4px", fontSize: 12, cursor: "pointer" }}
-                onClick={async () => { await sbUpdate("bonuses", { id: b.id }, { active: !b.active }); loadAll(); }}>
-                {b.active ? "⏸ Deactivate" : "▶️ Activate"}
-              </button>
+                onClick={async () => { await sbUpdate("bonuses", { id: b.id }, { active: !b.active }); loadAll(); }}>{b.active ? "⏸ Deactivate" : "▶️ Activate"}</button>
               <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "8px 4px", fontSize: 12, cursor: "pointer" }}
                 onClick={async () => { await sbDelete("bonuses", { id: b.id }); loadAll(); }}>🗑 Delete</button>
             </div>
@@ -723,14 +1127,33 @@ function AdminBonuses({ bonuses, loadAll }) {
   );
 }
 
-function ReviewCard({ s, approve, reject, readonly }) {
+function QAReviewCard({ a, questions, loadAll }) {
+  const q = questions.find(q => q.id === a.question_id);
+  return (
+    <div style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10, border: "1px solid #7c3aed" }}>
+      <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, marginBottom: 4 }}>❓ QUESTION ANSWER</div>
+      <div style={{ color: "#60a5fa", fontWeight: 700 }}>{a.member}</div>
+      <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 4 }}>Q: {q?.question}</div>
+      <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 6, padding: "8px 12px", background: "#0f172a", borderRadius: 8 }}>{a.answer}</div>
+      <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+        <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+          onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "approved", points: a.points }); loadAll(); }}>✅ Approve +{a.points} pts</button>
+        <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+          onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "rejected", points: 0 }); loadAll(); }}>❌ Reject</button>
+      </div>
+    </div>
+  );
+}
+
+function ReviewCard({ s, approve, reject, readonly, onDelete }) {
   const [expanded, setExpanded] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
   const statusColor = { pending: "#f59e0b", approved: "#10b981", rejected: "#ef4444" }[s.status];
   return (
     <div style={{ ...S.reviewCard, ...(s.bonus_id ? { border: "1px solid #f59e0b" } : {}) }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", cursor: "pointer" }} onClick={() => setExpanded(!expanded)}>
         <div>
-          {s.bonus_id && <div style={{ color: "#f59e0b", fontSize: 11, fontWeight: 700, marginBottom: 2 }}>🔥 BONUS SUBMISSION</div>}
+          {s.bonus_id && <div style={{ color: "#f59e0b", fontSize: 11, fontWeight: 700, marginBottom: 2 }}>🔥 BONUS</div>}
           <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 15 }}>{s.member}</div>
           <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 2 }}>{s.challenge_label}</div>
           <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{s.date}</div>
@@ -738,7 +1161,7 @@ function ReviewCard({ s, approve, reject, readonly }) {
         <div style={{ textAlign: "right" }}>
           <div style={{ color: statusColor, fontWeight: 700, fontSize: 13 }}>{s.status.toUpperCase()}</div>
           <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 20 }}>+{s.points}</div>
-          <div style={{ color: "#94a3b8", fontSize: 11 }}>{expanded ? "▲ hide" : "▼ view"}</div>
+          <div style={{ color: "#94a3b8", fontSize: 11 }}>{expanded ? "▲" : "▼"}</div>
         </div>
       </div>
       {expanded && (
@@ -758,6 +1181,16 @@ function ReviewCard({ s, approve, reject, readonly }) {
               <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }} onClick={() => reject(s.id)}>❌ Reject</button>
             </div>
           )}
+          <div style={{ marginTop: 10 }}>
+            {confirmDel ? (
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 8, padding: "8px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={() => onDelete(s.id)}>Confirm Delete</button>
+                <button style={{ flex: 1, background: "#334155", color: "#94a3b8", border: "none", borderRadius: 8, padding: "8px 0", fontSize: 13, cursor: "pointer" }} onClick={() => setConfirmDel(false)}>Cancel</button>
+              </div>
+            ) : (
+              <button style={{ width: "100%", background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }} onClick={() => setConfirmDel(true)}>🗑 Delete from view</button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -779,6 +1212,9 @@ const S = {
   navLabel: { color: "#64748b", fontSize: 10 },
   pulseDot: { position: "absolute", top: -2, right: -4, width: 8, height: 8, background: "#ef4444", borderRadius: "50%", display: "inline-block" },
   heroBanner: { background: "linear-gradient(135deg,#1e3a5f 0%,#1e40af 50%,#7c3aed 100%)", borderRadius: 20, padding: "32px 24px", textAlign: "center", marginBottom: 20 },
+  announcementBox: { background: "linear-gradient(135deg,#1e293b,#0f172a)", border: "1px solid #334155", borderLeft: "4px solid #f59e0b", borderRadius: 14, padding: "14px 16px", marginBottom: 16, display: "flex", gap: 12, alignItems: "flex-start" },
+  announcementIcon: { fontSize: 22, flexShrink: 0 },
+  announcementText: { color: "#e2e8f0", fontSize: 14, lineHeight: 1.6, flex: 1 },
   bonusAlert: { background: "linear-gradient(135deg,#78350f,#dc2626)", borderRadius: 14, padding: "14px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 12, cursor: "pointer" },
   quickGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 },
   quickCard: { border: "none", borderRadius: 16, padding: "20px 16px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 },
@@ -794,7 +1230,8 @@ const S = {
   codeChip: { background: "#0f172a", border: "1px solid #3b82f6", color: "#60a5fa", borderRadius: 6, padding: "2px 8px", fontFamily: "monospace", fontWeight: 700 },
   gateBox: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, gap: 16 },
   rulesHero: { background: "linear-gradient(135deg,#1e3a5f,#1e40af)", borderRadius: 20, padding: "24px 20px", marginBottom: 20, textAlign: "center" },
-  photoBox: { flex: 1, background: "#0f172a", border: "2px dashed #334155", borderRadius: 12, aspectRatio: "1", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", overflow: "hidden" },
+  photoBox: { background: "#0f172a", border: "2px dashed #334155", borderRadius: 12, aspectRatio: "1", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", overflow: "hidden" },
+  photoOptionBtn: { flex: 1, background: "#1e293b", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "6px 4px", fontSize: 11, cursor: "pointer" },
   lbRow: { background: "#1e293b", borderRadius: 14, padding: "16px 20px", marginBottom: 10, display: "flex", alignItems: "center", gap: 14 },
   emptyMsg: { color: "#64748b", textAlign: "center", padding: 40, fontSize: 15 },
   tabBtn: { flex: 1, background: "#1e293b", border: "none", color: "#64748b", borderRadius: 10, padding: "10px 4px", cursor: "pointer", fontSize: 12, fontWeight: 600, minWidth: 60 },
