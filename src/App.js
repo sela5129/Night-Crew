@@ -357,7 +357,7 @@ function JoinScreen({ members, setCurrentUser, setScreen, loadAll }) {
         {error && <div style={S.errorMsg}>{error}</div>}
         <button style={{ ...S.btnPrimary, opacity: saving ? 0.6 : 1 }} onClick={handleJoin} disabled={saving}>{saving ? "Joining..." : "Join Team 🚀"}</button>
       </div>
-
+<div style={S.hintBox}><strong>Team Code:</strong> <code style={S.codeChip}>{JOIN_CODE}</code></div>
     </div>
   );
 }
