@@ -183,7 +183,7 @@ export default function App() {
       <div style={S.app}>
         <Header screen={screen} setScreen={setScreen} currentUser={currentUser} isAdmin={isAdmin} setIsAdmin={setIsAdmin} pendingCount={pendingCount} newSubmissionAlert={newSubmissionAlert} />
         <div style={S.content}>
-          {screen === "home" && <HomeScreen setScreen={setScreen} leaderboard={leaderboard} totalPoints={totalPoints} activeBonuses={activeBonuses} announcement={announcement} activeQuestions={activeQuestions} />}
+          {screen === "home" && <HomeScreen setScreen={setScreen} leaderboard={leaderboard} totalPoints={totalPoints} activeBonuses={activeBonuses} announcement={announcement} activeQuestions={activeQuestions} members={members} />}
           {screen === "join" && <JoinScreen members={members} setCurrentUser={setCurrentUser} setScreen={setScreen} loadAll={loadAll} />}
           {screen === "rules" && <RulesScreen />}
           {screen === "submit" && currentUser && <SubmitScreen currentUser={currentUser} submissions={submissions} activeBonuses={activeBonuses} loadAll={loadAll} />}
@@ -263,8 +263,12 @@ function GateScreen({ setScreen }) {
   );
 }
 
-function HomeScreen({ setScreen, leaderboard, totalPoints, activeBonuses, announcement, activeQuestions }) {
+function HomeScreen({ setScreen, leaderboard, totalPoints, activeBonuses, announcement, activeQuestions, members }) {
   const medals = ["🥇", "🥈", "🥉"];
+  const allMembers = [...leaderboard];
+  const lbNames = leaderboard.map(m => m.name);
+  members.forEach(m => { if (!lbNames.includes(m)) allMembers.push({ name: m, points: 0 }); });
+  const topPoints = allMembers[0]?.points || 1;
   return (
     <div style={{ padding: 16 }}>
       <div style={S.heroBanner}>
@@ -311,14 +315,21 @@ function HomeScreen({ setScreen, leaderboard, totalPoints, activeBonuses, announ
         ))}
       </div>
 
-      {leaderboard.slice(0, 3).length > 0 && (
+      {allMembers.length > 0 && (
         <div style={{ background: "#1e293b", borderRadius: 16, padding: 20 }}>
-          <div style={S.sectionTitle}>🏆 Top 3</div>
-          {leaderboard.slice(0, 3).map((m, i) => (
-            <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid #334155" }}>
-              <span style={{ fontSize: 24 }}>{medals[i]}</span>
-              <span style={{ flex: 1, color: "#f1f5f9", fontWeight: 600 }}>{m.name}</span>
-              <span style={{ color: "#60a5fa", fontWeight: 700 }}>{m.points} pts</span>
+          <div style={S.sectionTitle}>🏆 Team Standings</div>
+          {allMembers.map((m, i) => (
+            <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: i < allMembers.length - 1 ? "1px solid #1e293b" : "none" }}>
+              <span style={{ fontSize: 18, width: 28, textAlign: "center", flexShrink: 0 }}>{i < 3 && m.points > 0 ? medals[i] : <span style={{ color: "#475569", fontSize: 12 }}>#{i+1}</span>}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <span style={{ color: "#f1f5f9", fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</span>
+                  <span style={{ color: m.points > 0 ? "#60a5fa" : "#475569", fontWeight: 700, fontSize: 13, marginLeft: 8, flexShrink: 0 }}>{m.points} pts</span>
+                </div>
+                <div style={{ height: 5, background: "#334155", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", background: i === 0 && m.points > 0 ? "linear-gradient(90deg,#f59e0b,#fbbf24)" : "linear-gradient(90deg,#3b82f6,#7c3aed)", borderRadius: 3, width: `${(m.points / topPoints) * 100}%`, transition: "width 0.6s ease" }} />
+                </div>
+              </div>
             </div>
           ))}
         </div>
@@ -348,22 +359,43 @@ function AnnouncementBox({ message }) {
 }
 
 function ExpectationsScreen({ expectations }) {
+  const [expanded, setExpanded] = useState({});
   return (
     <div style={{ padding: 16 }}>
       <div style={{ background: "linear-gradient(135deg,#065f46,#10b981)", borderRadius: 20, padding: "24px 20px", textAlign: "center", marginBottom: 20 }}>
         <div style={{ color: "#fff", fontWeight: 800, fontSize: 22 }}>👁 Expectations</div>
-        <div style={{ color: "#d1fae5", fontSize: 13, marginTop: 4 }}>Photos & standards from your team lead</div>
+        <div style={{ color: "#d1fae5", fontSize: 13, marginTop: 4 }}>Standards & examples from your team lead</div>
       </div>
       {expectations.length === 0 && <div style={S.emptyMsg}>No expectations posted yet.<br />Check back soon! 👀</div>}
-      {expectations.map(e => (
-        <div key={e.id} style={{ background: "#1e293b", borderRadius: 16, overflow: "hidden", marginBottom: 16 }}>
-          {e.img && <img src={e.img} alt={e.title} style={{ width: "100%", maxHeight: 260, objectFit: "cover" }} />}
-          <div style={{ padding: 16 }}>
-            <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 16 }}>{e.title}</div>
-            {e.description && <div style={{ color: "#94a3b8", fontSize: 14, marginTop: 8, whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{e.description}</div>}
+      {expectations.map(e => {
+        const photos = Array.isArray(e.imgs) && e.imgs.length > 0 ? e.imgs : (e.img ? [{ img: e.img, label: "" }] : []);
+        const isOpen = expanded[e.id];
+        return (
+          <div key={e.id} style={{ background: "#1e293b", borderRadius: 16, overflow: "hidden", marginBottom: 16 }}>
+            {photos.length === 1 && <img src={photos[0].img} alt={e.title} style={{ width: "100%", maxHeight: 260, objectFit: "cover" }} />}
+            {photos.length > 1 && (
+              <div>
+                <img src={photos[0].img} alt={photos[0].label || e.title} style={{ width: "100%", maxHeight: 240, objectFit: "cover" }} />
+                {photos[0].label && <div style={{ background: "#0f172a", color: "#94a3b8", fontSize: 12, padding: "6px 14px", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>{photos[0].label}</div>}
+                <button style={{ width: "100%", background: "#0f172a", border: "none", borderTop: "1px solid #334155", color: "#60a5fa", fontSize: 13, padding: "10px 0", cursor: "pointer", fontWeight: 600 }}
+                  onClick={() => setExpanded(prev => ({ ...prev, [e.id]: !prev[e.id] }))}>
+                  {isOpen ? "▲ Hide" : `▼ Show all ${photos.length} photos`}
+                </button>
+                {isOpen && photos.slice(1).map((p, i) => (
+                  <div key={i}>
+                    <img src={p.img} alt={p.label || `photo ${i + 2}`} style={{ width: "100%", maxHeight: 240, objectFit: "cover" }} />
+                    {p.label && <div style={{ background: "#0f172a", color: "#94a3b8", fontSize: 12, padding: "6px 14px", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>{p.label}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ padding: 16 }}>
+              <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 16 }}>{e.title}</div>
+              {e.description && <div style={{ color: "#94a3b8", fontSize: 14, marginTop: 8, whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{e.description}</div>}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -944,25 +976,46 @@ function AdminCashOut({ leaderboard, redemptions, loadAll, getPoints, getEarnedP
 function AdminExpectations({ expectations, loadAll }) {
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState({ title: "", description: "", img: null });
+  const [form, setForm] = useState({ title: "", description: "", photos: [] });
   const [saving, setSaving] = useState(false);
   const imgRef = useRef();
 
-  const resetForm = () => { setForm({ title: "", description: "", img: null }); setEditId(null); };
+  const resetForm = () => { setForm({ title: "", description: "", photos: [] }); setEditId(null); };
 
-  const openEdit = (e) => { setForm({ title: e.title, description: e.description || "", img: e.img || null }); setEditId(e.id); setShowForm(true); };
+  const openEdit = (e) => {
+    const photos = Array.isArray(e.imgs) && e.imgs.length > 0 ? e.imgs : (e.img ? [{ img: e.img, label: "" }] : []);
+    setForm({ title: e.title, description: e.description || "", photos });
+    setEditId(e.id); setShowForm(true);
+  };
 
   const handleImg = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const b64 = await toBase64(file);
-    setForm(f => ({ ...f, img: b64 }));
+    const files = Array.from(e.target.files);
+    const b64s = await Promise.all(files.map(f => toBase64(f)));
+    setForm(f => ({ ...f, photos: [...f.photos, ...b64s.map(img => ({ img, label: "" }))] }));
+  };
+
+  const updateLabel = (i, label) => {
+    setForm(f => { const photos = [...f.photos]; photos[i] = { ...photos[i], label }; return { ...f, photos }; });
+  };
+
+  const removePhoto = (i) => {
+    setForm(f => { const photos = [...f.photos]; photos.splice(i, 1); return { ...f, photos }; });
+  };
+
+  const movePhoto = (i, dir) => {
+    setForm(f => {
+      const photos = [...f.photos];
+      const j = i + dir;
+      if (j < 0 || j >= photos.length) return f;
+      [photos[i], photos[j]] = [photos[j], photos[i]];
+      return { ...f, photos };
+    });
   };
 
   const handleSave = async () => {
     if (!form.title.trim()) return;
     setSaving(true);
-    const data = { title: form.title, description: form.description, img: form.img };
+    const data = { title: form.title, description: form.description, imgs: form.photos, img: form.photos[0]?.img || null };
     if (editId) { await sbUpdate("expectations", { id: editId }, data); }
     else { await sbInsert("expectations", { id: Date.now(), ...data }); }
     await loadAll(); setShowForm(false); resetForm(); setSaving(false);
@@ -970,43 +1023,67 @@ function AdminExpectations({ expectations, loadAll }) {
 
   return (
     <div>
-      <button style={{ ...S.btnPrimary, marginBottom: 16, marginTop: 0 }} onClick={() => { resetForm(); setShowForm(true); }}>+ Add Expectation Photo</button>
+      <button style={{ ...S.btnPrimary, marginBottom: 16, marginTop: 0 }} onClick={() => { resetForm(); setShowForm(true); }}>+ Add Expectation</button>
       {showForm && (
         <div style={{ background: "#1e293b", borderRadius: 16, padding: 20, marginBottom: 16 }}>
           <div style={{ color: "#f1f5f9", fontWeight: 800, fontSize: 18, marginBottom: 16 }}>{editId ? "✏️ Edit" : "📸 New Expectation"}</div>
-          <div style={{ ...S.photoBox, aspectRatio: "16/9", marginBottom: 8 }} onClick={() => imgRef.current.click()}>
-            {form.img ? <img src={form.img} alt="expectation" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              : <><div style={{ fontSize: 32 }}>📷</div><div style={{ color: "#475569", fontSize: 12, marginTop: 4 }}>Tap to add photo</div></>}
-            <input ref={imgRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleImg} />
-          </div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-            <button style={S.photoOptionBtn} onClick={() => { imgRef.current.removeAttribute("capture"); imgRef.current.click(); }}>📁 Gallery</button>
-            <button style={S.photoOptionBtn} onClick={() => { imgRef.current.setAttribute("capture", "environment"); imgRef.current.click(); }}>📷 Camera</button>
-          </div>
+
           <label style={S.label}>Title</label>
           <input style={S.input} placeholder="e.g. End Cap Height Standard" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} />
+
           <label style={S.label}>Description</label>
           <textarea style={{ ...S.input, minHeight: 80, resize: "vertical", fontFamily: "inherit" }} placeholder="Describe what's expected..." value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
-          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+
+          <label style={S.label}>Photos ({form.photos.length} added)</label>
+          <div style={{ color: "#64748b", fontSize: 12, marginBottom: 10 }}>Add as many photos as you need. Label each one (e.g. "Before", "After", "Side View"). First photo shows as the preview.</div>
+
+          {form.photos.map((p, i) => (
+            <div key={i} style={{ background: "#0f172a", borderRadius: 12, marginBottom: 10, overflow: "hidden", border: "1px solid #334155" }}>
+              <img src={p.img} alt={`photo ${i+1}`} style={{ width: "100%", maxHeight: 180, objectFit: "cover" }} />
+              <div style={{ padding: 10 }}>
+                <input style={{ ...S.input, marginBottom: 8, fontSize: 13 }} placeholder={`Label (e.g. Before, After, Side view...)`} value={p.label} onChange={e => updateLabel(i, e.target.value)} />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={{ flex: 1, background: "#1e293b", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "6px 0", fontSize: 12, cursor: "pointer" }} onClick={() => movePhoto(i, -1)} disabled={i === 0}>↑ Up</button>
+                  <button style={{ flex: 1, background: "#1e293b", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "6px 0", fontSize: 12, cursor: "pointer" }} onClick={() => movePhoto(i, 1)} disabled={i === form.photos.length - 1}>↓ Down</button>
+                  <button style={{ flex: 1, background: "#1e293b", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "6px 0", fontSize: 12, cursor: "pointer" }} onClick={() => removePhoto(i)}>🗑 Remove</button>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+            <button style={{ flex: 1, background: "#0f172a", border: "2px dashed #334155", color: "#60a5fa", borderRadius: 10, padding: "12px 0", fontSize: 13, cursor: "pointer", fontWeight: 600 }}
+              onClick={() => { imgRef.current.removeAttribute("capture"); imgRef.current.click(); }}>📁 Add from Gallery</button>
+            <button style={{ flex: 1, background: "#0f172a", border: "2px dashed #334155", color: "#60a5fa", borderRadius: 10, padding: "12px 0", fontSize: 13, cursor: "pointer", fontWeight: 600 }}
+              onClick={() => { imgRef.current.setAttribute("capture", "environment"); imgRef.current.click(); }}>📷 Take Photo</button>
+            <input ref={imgRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleImg} />
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
             <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer", opacity: saving ? 0.6 : 1 }} onClick={handleSave} disabled={saving}>{saving ? "Saving..." : "💾 Save"}</button>
             <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }} onClick={() => { setShowForm(false); resetForm(); }}>Cancel</button>
           </div>
         </div>
       )}
+
       {expectations.length === 0 && !showForm && <div style={S.emptyMsg}>No expectations yet. Add your first one!</div>}
-      {expectations.map(e => (
-        <div key={e.id} style={{ background: "#1e293b", borderRadius: 14, overflow: "hidden", marginBottom: 12 }}>
-          {e.img && <img src={e.img} alt={e.title} style={{ width: "100%", maxHeight: 180, objectFit: "cover" }} />}
-          <div style={{ padding: 14 }}>
-            <div style={{ color: "#f1f5f9", fontWeight: 700 }}>{e.title}</div>
-            {e.description && <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 4, whiteSpace: "pre-wrap" }}>{e.description}</div>}
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer" }} onClick={() => openEdit(e)}>✏️ Edit</button>
-              <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("expectations", { id: e.id }); loadAll(); }}>🗑 Delete</button>
+      {expectations.map(e => {
+        const photos = Array.isArray(e.imgs) && e.imgs.length > 0 ? e.imgs : (e.img ? [{ img: e.img, label: "" }] : []);
+        return (
+          <div key={e.id} style={{ background: "#1e293b", borderRadius: 14, overflow: "hidden", marginBottom: 12 }}>
+            {photos[0] && <img src={photos[0].img} alt={e.title} style={{ width: "100%", maxHeight: 160, objectFit: "cover" }} />}
+            <div style={{ padding: 14 }}>
+              <div style={{ color: "#f1f5f9", fontWeight: 700 }}>{e.title}</div>
+              <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{photos.length} photo{photos.length !== 1 ? "s" : ""}</div>
+              {e.description && <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 4, whiteSpace: "pre-wrap" }}>{e.description}</div>}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer" }} onClick={() => openEdit(e)}>✏️ Edit</button>
+                <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("expectations", { id: e.id }); loadAll(); }}>🗑 Delete</button>
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
