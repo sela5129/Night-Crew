@@ -151,13 +151,17 @@ export default function App() {
   const activeQuestions = questions.filter(q => q.active);
   const pendingCount = submissions.filter(s => s.status === "pending").length + questionAnswers.filter(a => a.status === "pending").length;
 
-  const approveSubmission = async (id) => {
+  const approveSubmission = async (id, customPoints) => {
     const sub = submissions.find(s => s.id === id);
-    await sbUpdate("submissions", { id }, { status: "approved" });
+    const pts = customPoints !== undefined ? customPoints : sub.points;
+    await sbUpdate("submissions", { id }, { status: "approved", points: pts });
     if (sub?.bonus_id) await sbUpdate("bonuses", { id: sub.bonus_id }, { claimed_by: sub.member });
     loadAll();
   };
-  const rejectSubmission = async (id) => { await sbUpdate("submissions", { id }, { status: "rejected" }); loadAll(); };
+  const rejectSubmission = async (id, reason) => {
+    await sbUpdate("submissions", { id }, { status: "rejected", reject_reason: reason || null });
+    loadAll();
+  };
   const deleteSubmission = async (id) => { await sbDelete("submissions", { id }); loadAll(); };
   const deleteMember = async (name) => {
     await sbDelete("members", { name });
@@ -186,7 +190,7 @@ export default function App() {
           {screen === "submit" && !currentUser && <GateScreen setScreen={setScreen} />}
           {screen === "leaderboard" && <LeaderboardScreen leaderboard={leaderboard} totalPoints={totalPoints} members={members} />}
           {screen === "prizes" && <PrizesScreen prizes={prizes} />}
-          {screen === "bonuses" && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} />}
+          {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
           {screen === "expectations" && <ExpectationsScreen expectations={expectations} />}
           {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} />}
           {screen === "adminlogin" && <AdminLogin setIsAdmin={setIsAdmin} setScreen={setScreen} />}
@@ -198,7 +202,7 @@ export default function App() {
 }
 
 function Header({ screen, setScreen, currentUser, isAdmin, setIsAdmin, pendingCount, newSubmissionAlert }) {
-  const titles = { home: "Night Crew Challenge", join: "Join the Team", rules: "Rules & Points", submit: "Submit Proof", leaderboard: "Leaderboard", prizes: "Prizes", admin: "Admin Panel", adminlogin: "Admin Login", bonuses: "🔥 Bonus & Questions", expectations: "📸 Expectations" };
+  const titles = { home: "Night Crew Challenge", join: "Join the Team", rules: "Rules & Points", submit: "Submit Proof", leaderboard: "Leaderboard", prizes: "Prizes", admin: "Admin Panel", adminlogin: "Admin Login", bonuses: "🔥 Bonus & Questions", bonuses_tab_bonuses: "🔥 Bonus Challenges", bonuses_tab_questions: "❓ Daily Questions", expectations: "📸 Expectations" };
   return (
     <div style={S.header}>
       {newSubmissionAlert && (
@@ -227,11 +231,12 @@ function Header({ screen, setScreen, currentUser, isAdmin, setIsAdmin, pendingCo
 
 function BottomNav({ screen, setScreen, isAdmin, activeBonuses, activeQuestions, pendingCount }) {
   const hasDot = activeBonuses.length > 0 || activeQuestions.length > 0;
+  const isBonusScreen = screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions";
   const tabs = [
     { id: "home", icon: "🏠", label: "Home" },
     { id: "leaderboard", icon: "🏆", label: "Board" },
     { id: "submit", icon: "📸", label: "Submit" },
-    { id: "bonuses", icon: "🔥", label: "Bonus", dot: hasDot },
+    { id: "bonuses", icon: "🔥", label: "Bonus", dot: hasDot, active: isBonusScreen },
     { id: "prizes", icon: "🎁", label: "Prizes" },
     { id: "expectations", icon: "👁", label: "Expect" },
   ];
@@ -239,9 +244,9 @@ function BottomNav({ screen, setScreen, isAdmin, activeBonuses, activeQuestions,
   return (
     <div style={S.bottomNav}>
       {tabs.map(t => (
-        <button key={t.id} style={{ ...S.navTab, ...(screen === t.id ? S.navTabActive : {}) }} onClick={() => setScreen(t.id)}>
+        <button key={t.id} style={{ ...S.navTab, ...((screen === t.id || t.active) ? S.navTabActive : {}) }} onClick={() => setScreen(t.id)}>
           <span style={{ fontSize: 18, position: "relative" }}>{t.icon}{t.dot && <span style={S.pulseDot} />}</span>
-          <span style={{ ...S.navLabel, ...(screen === t.id ? { color: "#60a5fa" } : {}) }}>{t.label}</span>
+          <span style={{ ...S.navLabel, ...((screen === t.id || t.active) ? { color: "#60a5fa" } : {}) }}>{t.label}</span>
         </button>
       ))}
     </div>
@@ -271,17 +276,22 @@ function HomeScreen({ setScreen, leaderboard, totalPoints, activeBonuses, announ
 
       {announcement && <AnnouncementBox message={announcement} />}
 
-      {(activeBonuses.length > 0 || activeQuestions.length > 0) && (
-        <div style={S.bonusAlert} onClick={() => setScreen("bonuses")}>
+      {activeBonuses.length > 0 && (
+        <div style={S.bonusAlert} onClick={() => setScreen("bonuses_tab_bonuses")}>
           <span style={{ fontSize: 32 }}>🔥</span>
           <div style={{ flex: 1 }}>
-            <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>
-              {activeBonuses.length > 0 && `${activeBonuses.length} Bonus${activeBonuses.length > 1 ? "es" : ""}`}
-              {activeBonuses.length > 0 && activeQuestions.length > 0 && " · "}
-              {activeQuestions.length > 0 && `${activeQuestions.length} Question${activeQuestions.length > 1 ? "s" : ""}`}
-              {" Active!"}
-            </div>
-            <div style={{ color: "#fca5a5", fontSize: 12 }}>Earn bonus points — tap to see</div>
+            <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{activeBonuses.length} Bonus Challenge{activeBonuses.length > 1 ? "s" : ""} Active!</div>
+            <div style={{ color: "#fca5a5", fontSize: 12 }}>First to complete wins — tap to see</div>
+          </div>
+          <span style={{ color: "#fbbf24", fontSize: 18 }}>→</span>
+        </div>
+      )}
+      {activeQuestions.length > 0 && (
+        <div style={{ ...S.bonusAlert, background: "linear-gradient(135deg,#1e3a5f,#4c1d95)" }} onClick={() => setScreen("bonuses_tab_questions")}>
+          <span style={{ fontSize: 32 }}>❓</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{activeQuestions.length} Question{activeQuestions.length > 1 ? "s" : ""} Active!</div>
+            <div style={{ color: "#c4b5fd", fontSize: 12 }}>Answer to earn bonus points — tap to see</div>
           </div>
           <span style={{ color: "#fbbf24", fontSize: 18 }}>→</span>
         </div>
@@ -358,8 +368,8 @@ function ExpectationsScreen({ expectations }) {
   );
 }
 
-function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questionAnswers, loadAll, setScreen }) {
-  const [activeTab, setActiveTab] = useState("bonuses");
+function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questionAnswers, loadAll, setScreen, initialTab = "bonuses" }) {
+  const [activeTab, setActiveTab] = useState(initialTab);
   const expired = bonuses.filter(b => b.claimed_by || new Date(b.end_time) <= new Date());
   return (
     <div style={{ padding: 16 }}>
@@ -577,11 +587,14 @@ function RulesScreen() {
 }
 
 function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
+  const [mode, setMode] = useState("standard"); // "standard" | "above_beyond"
   const [challenge, setChallenge] = useState("");
   const [bonusId, setBonusId] = useState("");
   const [beforeImg, setBeforeImg] = useState(null);
   const [afterImg, setAfterImg] = useState(null);
   const [note, setNote] = useState("");
+  const [abDescription, setAbDescription] = useState("");
+  const [abSuggestedPts, setAbSuggestedPts] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -596,22 +609,33 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
   };
 
   const handleSubmit = async () => {
-    if (!challenge && !bonusId) { setError("Select a task or bonus."); return; }
     if (!beforeImg || !afterImg) { setError("Upload both before & after photos."); return; }
-    let label, points, subBonusId = null;
-    if (bonusId) {
-      const bonus = activeBonuses.find(b => String(b.id) === String(bonusId));
-      if (!bonus) { setError("That bonus is no longer available."); return; }
-      label = "🔥 BONUS: " + bonus.label; points = bonus.points; subBonusId = bonus.id;
+    let label, points, subBonusId = null, submissionType = "standard", desc = null, suggestedPts = null;
+
+    if (mode === "above_beyond") {
+      if (!abDescription.trim()) { setError("Add a description of what you did."); return; }
+      label = "⭐ Above & Beyond";
+      points = 0;
+      submissionType = "above_beyond";
+      desc = abDescription;
+      suggestedPts = abSuggestedPts ? parseInt(abSuggestedPts) : null;
     } else {
-      const ch = CHALLENGES.find(c => c.id === parseInt(challenge));
-      label = ch.label; points = ch.points;
+      if (!challenge && !bonusId) { setError("Select a task or bonus."); return; }
+      if (bonusId) {
+        const bonus = activeBonuses.find(b => String(b.id) === String(bonusId));
+        if (!bonus) { setError("That bonus is no longer available."); return; }
+        label = "🔥 BONUS: " + bonus.label; points = bonus.points; subBonusId = bonus.id;
+      } else {
+        const ch = CHALLENGES.find(c => c.id === parseInt(challenge));
+        label = ch.label; points = ch.points;
+      }
     }
+
     setSaving(true);
-    await sbInsert("submissions", { member: currentUser, challenge_label: label, points, bonus_id: subBonusId, before_img: beforeImg, after_img: afterImg, note, status: "pending", date: new Date().toLocaleString() });
+    await sbInsert("submissions", { member: currentUser, challenge_label: label, points, bonus_id: subBonusId, before_img: beforeImg, after_img: afterImg, note, status: "pending", date: new Date().toLocaleString(), submission_type: submissionType, description: desc, suggested_points: suggestedPts });
     await loadAll();
     setSubmitted(true); setSaving(false);
-    setChallenge(""); setBonusId(""); setBeforeImg(null); setAfterImg(null); setNote("");
+    setChallenge(""); setBonusId(""); setBeforeImg(null); setAfterImg(null); setNote(""); setAbDescription(""); setAbSuggestedPts("");
   };
 
   const mySubmissions = submissions.filter(s => s.member === currentUser);
@@ -627,24 +651,54 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
       )}
       <div style={S.formCard}>
         <div style={S.formTitle}>New Submission</div>
-        {activeBonuses.length > 0 && (
+
+        {/* Mode toggle */}
+        <div style={{ display: "flex", gap: 8, marginTop: 4, marginBottom: 4 }}>
+          <button style={{ flex: 1, background: mode === "standard" ? "#1d4ed8" : "#0f172a", border: `2px solid ${mode === "standard" ? "#3b82f6" : "#334155"}`, color: mode === "standard" ? "#fff" : "#94a3b8", borderRadius: 10, padding: "10px 0", fontSize: 13, cursor: "pointer", fontWeight: 600 }}
+            onClick={() => { setMode("standard"); setError(""); }}>📋 Standard Task</button>
+          <button style={{ flex: 1, background: mode === "above_beyond" ? "#7c3aed" : "#0f172a", border: `2px solid ${mode === "above_beyond" ? "#a855f7" : "#334155"}`, color: mode === "above_beyond" ? "#fff" : "#94a3b8", borderRadius: 10, padding: "10px 0", fontSize: 13, cursor: "pointer", fontWeight: 600 }}
+            onClick={() => { setMode("above_beyond"); setChallenge(""); setBonusId(""); setError(""); }}>⭐ Above & Beyond</button>
+        </div>
+
+        {mode === "above_beyond" && (
+          <div style={{ background: "linear-gradient(135deg,#2e1065,#4c1d95)", borderRadius: 12, padding: "12px 14px", marginBottom: 4 }}>
+            <div style={{ color: "#e9d5ff", fontSize: 13, lineHeight: 1.5 }}>Did something that's not on the list? Submit it here! Describe what you did and why it deserves points. Your team lead will review and decide.</div>
+          </div>
+        )}
+
+        {mode === "standard" && (
           <>
-            <label style={S.label}>🔥 Active Bonus (optional)</label>
-            <select style={{ ...S.input, borderColor: bonusId ? "#f59e0b" : "#334155" }} value={bonusId} onChange={e => { setBonusId(e.target.value); setChallenge(""); setError(""); }}>
-              <option value="">— No bonus —</option>
-              {activeBonuses.map(b => <option key={b.id} value={b.id}>{b.icon || "⭐"} {b.label} (+{b.points} pts)</option>)}
-            </select>
+            {activeBonuses.length > 0 && (
+              <>
+                <label style={S.label}>🔥 Active Bonus (optional)</label>
+                <select style={{ ...S.input, borderColor: bonusId ? "#f59e0b" : "#334155" }} value={bonusId} onChange={e => { setBonusId(e.target.value); setChallenge(""); setError(""); }}>
+                  <option value="">— No bonus —</option>
+                  {activeBonuses.map(b => <option key={b.id} value={b.id}>{b.icon || "⭐"} {b.label} (+{b.points} pts)</option>)}
+                </select>
+              </>
+            )}
+            {!bonusId && (
+              <>
+                <label style={S.label}>Task Completed</label>
+                <select style={S.input} value={challenge} onChange={e => { setChallenge(e.target.value); setError(""); }}>
+                  <option value="">— Choose a task —</option>
+                  {CHALLENGES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label} (+{c.points} pt{c.points > 1 ? "s" : ""})</option>)}
+                </select>
+              </>
+            )}
           </>
         )}
-        {!bonusId && (
+
+        {mode === "above_beyond" && (
           <>
-            <label style={S.label}>Task Completed</label>
-            <select style={S.input} value={challenge} onChange={e => { setChallenge(e.target.value); setError(""); }}>
-              <option value="">— Choose a task —</option>
-              {CHALLENGES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label} (+{c.points} pt{c.points > 1 ? "s" : ""})</option>)}
-            </select>
+            <label style={S.label}>What Did You Do?</label>
+            <textarea style={{ ...S.input, minHeight: 90, resize: "vertical", fontFamily: "inherit", lineHeight: 1.6 }}
+              placeholder="Describe what you did and why it should count for points..." value={abDescription} onChange={e => { setAbDescription(e.target.value); setError(""); }} />
+            <label style={S.label}>Suggested Points (optional)</label>
+            <input style={S.input} type="number" placeholder="How many points do you think you deserve?" value={abSuggestedPts} onChange={e => setAbSuggestedPts(e.target.value)} />
           </>
         )}
+
         <label style={S.label}>Photos (Before & After)</label>
         <div style={{ display: "flex", gap: 12 }}>
           {["before", "after"].map(type => (
@@ -665,7 +719,9 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
         <label style={S.label}>Note (optional)</label>
         <input style={S.input} placeholder="Aisle #, location, etc." value={note} onChange={e => setNote(e.target.value)} />
         {error && <div style={S.errorMsg}>{error}</div>}
-        <button style={{ ...S.btnPrimary, opacity: saving ? 0.6 : 1 }} onClick={handleSubmit} disabled={saving}>{saving ? "Submitting..." : "Submit for Approval 🚀"}</button>
+        <button style={{ ...S.btnPrimary, opacity: saving ? 0.6 : 1, ...(mode === "above_beyond" ? { background: "linear-gradient(135deg,#7c3aed,#a855f7)" } : {}) }} onClick={handleSubmit} disabled={saving}>
+          {saving ? "Submitting..." : mode === "above_beyond" ? "Submit Above & Beyond ⭐" : "Submit for Approval 🚀"}
+        </button>
       </div>
       {mySubmissions.length > 0 && (
         <div>
@@ -676,7 +732,13 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
                 <span style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 14, flex: 1 }}>{s.challenge_label}</span>
                 <span style={{ borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", marginLeft: 8, ...statusStyle(s.status) }}>{s.status}</span>
               </div>
-              <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>{s.date} · +{s.points} pts</div>
+              <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>{s.date}{s.points > 0 ? ` · +${s.points} pts` : " · pts TBD"}</div>
+              {s.description && <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 6, fontStyle: "italic" }}>"{s.description}"</div>}
+              {s.status === "rejected" && s.reject_reason && (
+                <div style={{ background: "#450a0a", borderRadius: 8, padding: "8px 12px", marginTop: 8, color: "#fca5a5", fontSize: 13 }}>
+                  ❌ Reason: {s.reject_reason}
+                </div>
+              )}
               <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
                 {s.before_img && <img src={s.before_img} alt="before" style={{ width: "calc(50% - 5px)", height: 90, objectFit: "cover", borderRadius: 8 }} />}
                 {s.after_img && <img src={s.after_img} alt="after" style={{ width: "calc(50% - 5px)", height: 90, objectFit: "cover", borderRadius: 8 }} />}
@@ -1287,24 +1349,47 @@ function QAReviewCard({ a, questions, loadAll }) {
 function ReviewCard({ s, approve, reject, readonly, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [showRejectForm, setShowRejectForm] = useState(false);
+  const [customPoints, setCustomPoints] = useState(s.suggested_points ? String(s.suggested_points) : "");
   const statusColor = { pending: "#f59e0b", approved: "#10b981", rejected: "#ef4444" }[s.status];
+  const isAboveBeyond = s.submission_type === "above_beyond";
+
+  const handleReject = async () => {
+    await reject(s.id, rejectReason);
+    setShowRejectForm(false);
+  };
+
+  const handleApprove = async () => {
+    const pts = isAboveBeyond ? (parseInt(customPoints) || 0) : s.points;
+    await approve(s.id, pts);
+  };
+
   return (
-    <div style={{ ...S.reviewCard, ...(s.bonus_id ? { border: "1px solid #f59e0b" } : {}) }}>
+    <div style={{ ...S.reviewCard, ...(s.bonus_id ? { border: "1px solid #f59e0b" } : {}), ...(isAboveBeyond ? { border: "1px solid #a855f7" } : {}) }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", cursor: "pointer" }} onClick={() => setExpanded(!expanded)}>
         <div>
           {s.bonus_id && <div style={{ color: "#f59e0b", fontSize: 11, fontWeight: 700, marginBottom: 2 }}>🔥 BONUS</div>}
+          {isAboveBeyond && <div style={{ color: "#a855f7", fontSize: 11, fontWeight: 700, marginBottom: 2 }}>⭐ ABOVE & BEYOND</div>}
           <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 15 }}>{s.member}</div>
           <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 2 }}>{s.challenge_label}</div>
           <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{s.date}</div>
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ color: statusColor, fontWeight: 700, fontSize: 13 }}>{s.status.toUpperCase()}</div>
-          <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 20 }}>+{s.points}</div>
+          <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 20 }}>{isAboveBeyond && s.status === "pending" ? "?" : `+${s.points}`}</div>
           <div style={{ color: "#94a3b8", fontSize: 11 }}>{expanded ? "▲" : "▼"}</div>
         </div>
       </div>
       {expanded && (
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #334155" }}>
+          {isAboveBeyond && s.description && (
+            <div style={{ background: "linear-gradient(135deg,#2e1065,#3b0764)", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+              <div style={{ color: "#c4b5fd", fontSize: 12, fontWeight: 700, marginBottom: 4 }}>WHAT THEY DID</div>
+              <div style={{ color: "#e9d5ff", fontSize: 14, lineHeight: 1.6 }}>{s.description}</div>
+              {s.suggested_points && <div style={{ color: "#a78bfa", fontSize: 12, marginTop: 6 }}>💡 They suggested: {s.suggested_points} pts</div>}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10 }}>
             {["before_img", "after_img"].map((key, i) => s[key] && (
               <div key={key} style={{ textAlign: "center", width: "calc(50% - 5px)" }}>
@@ -1314,11 +1399,34 @@ function ReviewCard({ s, approve, reject, readonly, onDelete }) {
             ))}
           </div>
           {s.note && <div style={{ background: "#0f172a", borderRadius: 8, padding: "8px 12px", color: "#94a3b8", fontSize: 13, marginTop: 10 }}>📝 {s.note}</div>}
+          {s.reject_reason && <div style={{ background: "#450a0a", borderRadius: 8, padding: "8px 12px", color: "#fca5a5", fontSize: 13, marginTop: 10 }}>❌ Rejection reason: {s.reject_reason}</div>}
+
           {!readonly && s.status === "pending" && (
-            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-              <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }} onClick={() => approve(s.id)}>✅ Approve +{s.points} pts</button>
-              <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }} onClick={() => reject(s.id)}>❌ Reject</button>
-            </div>
+            <>
+              {isAboveBeyond && (
+                <div style={{ marginTop: 14 }}>
+                  <label style={S.label}>Points to Award</label>
+                  <input style={S.input} type="number" placeholder="Enter points to award" value={customPoints} onChange={e => setCustomPoints(e.target.value)} />
+                </div>
+              )}
+              {!showRejectForm ? (
+                <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                  <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }} onClick={handleApprove}>
+                    ✅ Approve {isAboveBeyond ? (customPoints ? `+${customPoints} pts` : "(set pts above)") : `+${s.points} pts`}
+                  </button>
+                  <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }} onClick={() => setShowRejectForm(true)}>❌ Reject</button>
+                </div>
+              ) : (
+                <div style={{ marginTop: 14 }}>
+                  <label style={S.label}>Reason for Rejection</label>
+                  <input style={S.input} placeholder="e.g. Photos unclear, task not complete..." value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
+                  <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                    <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "11px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={handleReject}>Confirm Reject</button>
+                    <button style={{ flex: 1, background: "#334155", color: "#94a3b8", border: "none", borderRadius: 10, padding: "11px 0", fontSize: 13, cursor: "pointer" }} onClick={() => setShowRejectForm(false)}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
           <div style={{ marginTop: 10 }}>
             {confirmDel
