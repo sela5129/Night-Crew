@@ -57,19 +57,21 @@ export default async function handler(req, res) {
     </div>
   `;
 
-  await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: 'NightCrew <onboarding@resend.dev>',
-      to: 'sergiolara@gmail.com', // 👈 replace with your actual email
-      subject,
-      html: emailBody,
-    })
-  });
+  const emailResponse = await fetch('https://api.resend.com/emails', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    from: 'onboarding@resend.dev',
+    to: 'YOUR_EMAIL@gmail.com',
+    subject,
+    html: emailBody,
+  })
+});
 
-  return res.status(200).json({ success: true });
-}
+const emailResult = await emailResponse.json();
+console.log('Resend response:', JSON.stringify(emailResult));
+
+return res.status(200).json({ success: true, resend: emailResult });
