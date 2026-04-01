@@ -100,6 +100,7 @@ export default function App() {
   const [, setTick] = useState(0);
   const prevPendingCount = useRef(0);
   const [newSubmissionAlert, setNewSubmissionAlert] = useState(false);
+  const [pendingBonusId, setPendingBonusId] = useState("");
 
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, []);
 
@@ -186,11 +187,11 @@ export default function App() {
           {screen === "home" && <HomeScreen setScreen={setScreen} leaderboard={leaderboard} totalPoints={totalPoints} activeBonuses={activeBonuses} announcement={announcement} activeQuestions={activeQuestions} members={members} />}
           {screen === "join" && <JoinScreen members={members} setCurrentUser={setCurrentUser} setScreen={setScreen} loadAll={loadAll} />}
           {screen === "rules" && <RulesScreen />}
-          {screen === "submit" && currentUser && <SubmitScreen currentUser={currentUser} submissions={submissions} activeBonuses={activeBonuses} loadAll={loadAll} />}
+          {screen === "submit" && currentUser && <SubmitScreen currentUser={currentUser} submissions={submissions} activeBonuses={activeBonuses} loadAll={loadAll} initialBonusId={pendingBonusId} />}
           {screen === "submit" && !currentUser && <GateScreen setScreen={setScreen} />}
           {screen === "leaderboard" && <LeaderboardScreen leaderboard={leaderboard} totalPoints={totalPoints} members={members} />}
           {screen === "prizes" && <PrizesScreen prizes={prizes} />}
-          {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} setBonusId={setBonusId} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
+          {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
           {screen === "expectations" && <ExpectationsScreen expectations={expectations} />}
           {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} />}
           {screen === "adminlogin" && <AdminLogin setIsAdmin={setIsAdmin} setScreen={setScreen} />}
@@ -420,7 +421,7 @@ function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questio
             const tl = getTimeLeft(b.end_time);
             const urgent = tl && !tl.includes("h") && !tl.includes("m ");
             return (
-              <div key={b.id} onClick={() => { setScreen("submit"); setBonusId(b.id); }} style={{ ...S.bonusCard, cursor: "pointer" }}>
+              <div key={b.id} onClick={() => { setScreen("submit"); setPendingBonusId(b.id); }} style={{ ...S.bonusCard, cursor: "pointer" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
                   <span style={{ fontSize: 36 }}>{b.icon || "⭐"}</span>
                   <div style={{ flex: 1 }}>
@@ -618,10 +619,10 @@ function RulesScreen() {
   );
 }
 
-function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll }) {
+function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initialBonusId }) {
   const [mode, setMode] = useState("standard"); // "standard" | "above_beyond"
   const [challenge, setChallenge] = useState("");
-  const [bonusId, setBonusId] = useState("");
+  const [bonusId, setBonusId] = useState(initialBonusId || "");
   const [beforeImg, setBeforeImg] = useState(null);
   const [afterImg, setAfterImg] = useState(null);
   const [note, setNote] = useState("");
