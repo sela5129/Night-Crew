@@ -420,7 +420,7 @@ function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questio
             const tl = getTimeLeft(b.end_time);
             const urgent = tl && !tl.includes("h") && !tl.includes("m ");
             return (
-              <div key={b.id} style={{ ...S.bonusCard, ...(urgent ? { border: "2px solid #ef4444", background: "linear-gradient(135deg,#450a0a,#7f1d1d)" } : {}) }}>
+              <div key={b.id} onClick={() => { setScreen("submit"); setBonusId(b.id); }} style={{ ...S.bonusCard, cursor: "pointer",
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
                   <span style={{ fontSize: 36 }}>{b.icon || "⭐"}</span>
                   <div style={{ flex: 1 }}>
