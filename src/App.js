@@ -101,11 +101,11 @@ export default function App() {
   const prevPendingCount = useRef(0);
   const [newSubmissionAlert, setNewSubmissionAlert] = useState(false);
   const [pendingBonusId, setPendingBonusId] = useState("");
-  const [pendingBonusId, setPendingBonusId] = useState("");
+  
   const [dailyStandards, setDailyStandards] = useState([]);
-const [assignments, setAssignments] = useState([]);
-const [feedback, setFeedback] = useState([]);
-const [redemptionRequests, setRedemptionRequests] = useState([]);
+  const [assignments, setAssignments] = useState([]);
+  const [feedback, setFeedback] = useState([]);
+  const [redemptionRequests, setRedemptionRequests] = useState([]);
 
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, []);
 
