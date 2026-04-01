@@ -125,7 +125,7 @@ const [redemptionRequests, setRedemptionRequests] = useState([]);
   sbGet("feedback", "select=*&order=created_at.desc"),
   sbGet("redemption_requests", "select=*&order=created_at.desc"),
 ]);
-    setDailyStandards(Array.isArray(ds) ? ds : []);
+  setDailyStandards(Array.isArray(ds) ? ds : []);
   setAssignments(Array.isArray(asgn) ? asgn : []);
   setFeedback(Array.isArray(fb) ? fb : []);
   setRedemptionRequests(Array.isArray(rr) ? rr : []);
