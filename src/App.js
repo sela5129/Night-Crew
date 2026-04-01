@@ -190,7 +190,7 @@ export default function App() {
           {screen === "submit" && !currentUser && <GateScreen setScreen={setScreen} />}
           {screen === "leaderboard" && <LeaderboardScreen leaderboard={leaderboard} totalPoints={totalPoints} members={members} />}
           {screen === "prizes" && <PrizesScreen prizes={prizes} />}
-          {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
+          {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} setBonusId={setBonusId} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
           {screen === "expectations" && <ExpectationsScreen expectations={expectations} />}
           {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} />}
           {screen === "adminlogin" && <AdminLogin setIsAdmin={setIsAdmin} setScreen={setScreen} />}
@@ -400,7 +400,7 @@ function ExpectationsScreen({ expectations }) {
   );
 }
 
-function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questionAnswers, loadAll, setScreen, initialTab = "bonuses" }) {
+function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questionAnswers, loadAll, setScreen, setBonusId, initialTab = "bonuses" }) {
   const [activeTab, setActiveTab] = useState(initialTab);
   const expired = bonuses.filter(b => b.claimed_by || new Date(b.end_time) <= new Date());
   return (
