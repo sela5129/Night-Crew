@@ -101,21 +101,34 @@ export default function App() {
   const prevPendingCount = useRef(0);
   const [newSubmissionAlert, setNewSubmissionAlert] = useState(false);
   const [pendingBonusId, setPendingBonusId] = useState("");
+  const [pendingBonusId, setPendingBonusId] = useState("");
+  const [dailyStandards, setDailyStandards] = useState([]);
+const [assignments, setAssignments] = useState([]);
+const [feedback, setFeedback] = useState([]);
+const [redemptionRequests, setRedemptionRequests] = useState([]);
 
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, []);
 
   const loadAll = async () => {
-    const [m, s, b, p, a, q, qa, ex, rd] = await Promise.all([
-      sbGet("members", "select=name&order=created_at.asc"),
-      sbGet("submissions", "select=*&order=created_at.desc"),
-      sbGet("bonuses", "select=*&order=id.desc"),
-      sbGet("prizes", "select=*&order=id.asc"),
-      sbGet("announcements", "select=message&id=eq.1"),
-      sbGet("questions", "select=*&order=created_at.desc"),
-      sbGet("question_answers", "select=*&order=created_at.desc"),
-      sbGet("expectations", "select=*&order=created_at.desc"),
-      sbGet("point_redemptions", "select=*&order=created_at.desc"),
-    ]);
+  const [m, s, b, p, rd, a, q, qa, ex, ds, asgn, fb, rr] = await Promise.all([
+  sbGet("members", "select=name&order=created_at.asc"),
+  sbGet("submissions", "select=*&order=created_at.desc"),
+  sbGet("bonuses", "select=*&order=id.desc"),
+  sbGet("prizes", "select=*&order=id.asc"),
+  sbGet("point_redemptions", "select=*&order=created_at.desc"),
+  sbGet("announcements", "select=message&id=eq.1"),
+  sbGet("questions", "select=*&order=created_at.desc"),
+  sbGet("question_answers", "select=*&order=created_at.desc"),
+  sbGet("expectations", "select=*&order=created_at.desc"),
+  sbGet("daily_standards", "select=*&order=id.asc"),
+  sbGet("assignments", "select=*&order=created_at.desc"),
+  sbGet("feedback", "select=*&order=created_at.desc"),
+  sbGet("redemption_requests", "select=*&order=created_at.desc"),
+]);
+    setDailyStandards(Array.isArray(ds) ? ds : []);
+  setAssignments(Array.isArray(asgn) ? asgn : []);
+  setFeedback(Array.isArray(fb) ? fb : []);
+  setRedemptionRequests(Array.isArray(rr) ? rr : []);
     const newSubs = Array.isArray(s) ? s : [];
     const newPending = newSubs.filter(x => x.status === "pending").length;
     if (newPending > prevPendingCount.current && prevPendingCount.current >= 0 && !loading) {
