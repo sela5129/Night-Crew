@@ -19,18 +19,31 @@ const CHALLENGES = [
 const BONUS_ICONS = ["⭐","🎯","🚀","💥","🔥","⚡","🏅","🎪","🎲","💎"];
 
 async function sbGet(table, params = "") {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
-  });
-  return res.json();
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+    });
+    if (!res.ok) return [];
+    return res.json();
+  } catch (err) {
+    console.error(`sbGet ${table} failed:`, err);
+    return [];
+  }
 }
 async function sbInsert(table, data) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-    method: "POST",
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
-    body: JSON.stringify(data)
-  });
-  return res.json();
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+      body: JSON.stringify(data)
+    });
+    const json = await res.json();
+    if (!res.ok) return { error: json };
+    return json;
+  } catch (err) {
+    console.error(`sbInsert ${table} failed:`, err);
+    return { error: { message: err.message } };
+  }
 }
 async function sbUpdate(table, match, data) {
   const params = Object.entries(match).map(([k, v]) => `${k}=eq.${v}`).join("&");
@@ -52,20 +65,36 @@ async function sbDelete(table, match) {
 
 function toBase64(file) {
   return new Promise((res, rej) => {
+    // Reject files that are unreasonably large before even loading them
+    if (file.size > 20 * 1024 * 1024) {
+      rej(new Error("Photo is too large. Please use a smaller image (under 20 MB)."));
+      return;
+    }
     const img = new Image();
     const url = URL.createObjectURL(file);
     img.onload = () => {
-      const canvas = document.createElement("canvas");
-      const max = 800;
-      let w = img.width, h = img.height;
-      if (w > max) { h = (h * max) / w; w = max; }
-      if (h > max) { w = (w * max) / h; h = max; }
-      canvas.width = w; canvas.height = h;
-      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-      URL.revokeObjectURL(url);
-      res(canvas.toDataURL("image/jpeg", 0.6));
+      try {
+        const canvas = document.createElement("canvas");
+        // Keep max dimension at 700px and quality at 0.55 to stay well under Supabase row limits
+        const max = 700;
+        let w = img.width, h = img.height;
+        if (w > max) { h = Math.round((h * max) / w); w = max; }
+        if (h > max) { w = Math.round((w * max) / h); h = max; }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.55);
+        // Safety check: warn if still large (> ~400 KB base64)
+        if (dataUrl.length > 400000) {
+          console.warn("Compressed image is still large:", Math.round(dataUrl.length / 1024), "KB");
+        }
+        res(dataUrl);
+      } catch (err) {
+        URL.revokeObjectURL(url);
+        rej(err);
+      }
     };
-    img.onerror = rej;
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("Could not load image. Try a different photo.")); };
     img.src = url;
   });
 }
@@ -110,6 +139,7 @@ export default function App() {
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, []);
 
   const loadAll = async () => {
+  try {
   const [m, s, b, p, rd, a, q, qa, ex, ds, asgn, fb, rr] = await Promise.all([
   sbGet("members", "select=name&order=created_at.asc"),
   sbGet("submissions", "select=*&order=created_at.desc"),
@@ -145,7 +175,12 @@ export default function App() {
     setQuestionAnswers(Array.isArray(qa) ? qa : []);
     setExpectations(Array.isArray(ex) ? ex : []);
     setRedemptions(Array.isArray(rd) ? rd : []);
+  } catch (err) {
+    console.error("loadAll failed:", err);
+    // Don't crash — just keep showing whatever we already have
+  } finally {
     setLoading(false);
+  }
   };
 
   useEffect(() => { loadAll(); const t = setInterval(loadAll, 15000); return () => clearInterval(t); }, []);
@@ -204,7 +239,7 @@ export default function App() {
           {screen === "submit" && !currentUser && <GateScreen setScreen={setScreen} />}
           {screen === "leaderboard" && <LeaderboardScreen leaderboard={leaderboard} totalPoints={totalPoints} members={members} />}
           {screen === "prizes" && <PrizesScreen prizes={prizes} />}
-          {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
+          {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} setPendingBonusId={setPendingBonusId} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
           {screen === "expectations" && <ExpectationsScreen expectations={expectations} />}
           {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} />}
           {screen === "adminlogin" && <AdminLogin setIsAdmin={setIsAdmin} setScreen={setScreen} />}
@@ -414,7 +449,7 @@ function ExpectationsScreen({ expectations }) {
   );
 }
 
-function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questionAnswers, loadAll, setScreen, setBonusId, initialTab = "bonuses" }) {
+function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questionAnswers, loadAll, setScreen, setPendingBonusId, initialTab = "bonuses" }) {
   const [activeTab, setActiveTab] = useState(initialTab);
   const expired = bonuses.filter(b => b.claimed_by || new Date(b.end_time) <= new Date());
   return (
@@ -434,7 +469,7 @@ function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questio
             const tl = getTimeLeft(b.end_time);
             const urgent = tl && !tl.includes("h") && !tl.includes("m ");
             return (
-              <div key={b.id} onClick={() => { setScreen("submit"); setPendingBonusId(b.id); }} style={{ ...S.bonusCard, cursor: "pointer" }}>
+              <div key={b.id} onClick={() => { if (setPendingBonusId) setPendingBonusId(b.id); setScreen("submit"); }} style={{ ...S.bonusCard, cursor: "pointer" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
                   <span style={{ fontSize: 36 }}>{b.icon || "⭐"}</span>
                   <div style={{ flex: 1 }}>
@@ -511,7 +546,7 @@ function QuestionCard({ q, currentUser, questionAnswers, loadAll }) {
       status = correct ? "approved" : "rejected";
       setResult(correct);
     }
-    await sbInsert("question_answers", { id: Date.now(), question_id: q.id, member: currentUser, answer, status, points: correct || q.type === "short_answer" ? q.points : 0, answered_at: today });
+    await sbInsert("question_answers", { id: Date.now() * 1000 + Math.floor(Math.random() * 1000), question_id: q.id, member: currentUser, answer, status, points: correct || q.type === "short_answer" ? q.points : 0, answered_at: today });
     await loadAll();
     setSubmitted(true); setSaving(false);
   };
@@ -650,8 +685,14 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initia
   const handleImg = async (e, type) => {
     const file = e.target.files[0];
     if (!file) return;
-    const b64 = await toBase64(file);
-    type === "before" ? setBeforeImg(b64) : setAfterImg(b64);
+    try {
+      const b64 = await toBase64(file);
+      type === "before" ? setBeforeImg(b64) : setAfterImg(b64);
+    } catch (err) {
+      setError(err.message || "Failed to process photo. Please try a different image.");
+    }
+    // Reset input so the same file can be re-selected if needed
+    e.target.value = "";
   };
 
   const handleSubmit = async () => {
@@ -678,10 +719,22 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initia
     }
 
     setSaving(true);
-    await sbInsert("submissions", { member: currentUser, challenge_label: label, points, bonus_id: subBonusId, before_img: beforeImg, after_img: afterImg, note, status: "pending", date: new Date().toLocaleString(), submission_type: submissionType, description: desc, suggested_points: suggestedPts });
-    await loadAll();
-    setSubmitted(true); setSaving(false);
-    setChallenge(""); setBonusId(""); setBeforeImg(null); setAfterImg(null); setNote(""); setAbDescription(""); setAbSuggestedPts("");
+    setError("");
+    try {
+      const result = await sbInsert("submissions", { member: currentUser, challenge_label: label, points, bonus_id: subBonusId, before_img: beforeImg, after_img: afterImg, note, status: "pending", date: new Date().toLocaleString(), submission_type: submissionType, description: desc, suggested_points: suggestedPts });
+      // sbInsert returns an array on success, or an object with an error field on failure
+      if (result && result.error) {
+        setError("Submission failed: " + (result.error.message || "Unknown error. Try reducing photo size."));
+        setSaving(false);
+        return;
+      }
+      await loadAll();
+      setSubmitted(true); setSaving(false);
+      setChallenge(""); setBonusId(""); setBeforeImg(null); setAfterImg(null); setNote(""); setAbDescription(""); setAbSuggestedPts("");
+    } catch (err) {
+      setError("Submission failed. Please check your connection and try again.");
+      setSaving(false);
+    }
   };
 
   const mySubmissions = submissions.filter(s => s.member === currentUser);
@@ -942,11 +995,23 @@ function AdminCashOut({ leaderboard, redemptions, loadAll, getPoints, getEarnedP
     const available = getPoints(selected);
     if (pts > available) { setError(`${selected} only has ${available} pts available.`); return; }
     setSaving(true);
-    await sbInsert("point_redemptions", { id: Date.now(), member: selected, points: pts, note, redeemed_at: new Date().toLocaleString() });
-    await loadAll();
-    setSuccess(`✅ Cashed out ${pts} pts from ${selected}!`);
-    setSelected(""); setAmount(""); setNote(""); setError(""); setSaving(false);
-    setTimeout(() => setSuccess(""), 3000);
+    setError("");
+    try {
+      const uniqueId = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+      const result = await sbInsert("point_redemptions", { id: uniqueId, member: selected, points: pts, note, redeemed_at: new Date().toLocaleString() });
+      if (result && result.error) {
+        setError("Cash out failed: " + (result.error.message || "Please try again."));
+        setSaving(false);
+        return;
+      }
+      await loadAll();
+      setSuccess(`✅ Cashed out ${pts} pts from ${selected}!`);
+      setSelected(""); setAmount(""); setNote(""); setError(""); setSaving(false);
+      setTimeout(() => setSuccess(""), 3000);
+    } catch (err) {
+      setError("Cash out failed. Please check your connection.");
+      setSaving(false);
+    }
   };
 
   const history = [...redemptions].slice(0, 20);
@@ -1004,8 +1069,13 @@ function AdminExpectations({ expectations, loadAll }) {
 
   const handleImg = async (e) => {
     const files = Array.from(e.target.files);
-    const b64s = await Promise.all(files.map(f => toBase64(f)));
-    setForm(f => ({ ...f, photos: [...f.photos, ...b64s.map(img => ({ img, label: "" }))] }));
+    try {
+      const b64s = await Promise.all(files.map(f => toBase64(f)));
+      setForm(f => ({ ...f, photos: [...f.photos, ...b64s.map(img => ({ img, label: "" }))] }));
+    } catch (err) {
+      alert(err.message || "Failed to process one or more photos. Try smaller images.");
+    }
+    e.target.value = "";
   };
 
   const updateLabel = (i, label) => {
