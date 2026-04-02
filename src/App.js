@@ -46,21 +46,31 @@ async function sbInsert(table, data) {
   }
 }
 async function sbUpdate(table, match, data) {
-  const params = Object.entries(match).map(([k, v]) => `${k}=eq.${v}`).join("&");
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
-    method: "PATCH",
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify(data)
-  });
-  return res.ok;
+  try {
+    const params = Object.entries(match).map(([k, v]) => `${k}=eq.${v}`).join("&");
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+      method: "PATCH",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify(data)
+    });
+    return res.ok;
+  } catch (err) {
+    console.error(`sbUpdate ${table} failed:`, err);
+    return false;
+  }
 }
 async function sbDelete(table, match) {
-  const params = Object.entries(match).map(([k, v]) => `${k}=eq.${v}`).join("&");
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
-    method: "DELETE",
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
-  });
-  return res.ok;
+  try {
+    const params = Object.entries(match).map(([k, v]) => `${k}=eq.${v}`).join("&");
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+      method: "DELETE",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+    });
+    return res.ok;
+  } catch (err) {
+    console.error(`sbDelete ${table} failed:`, err);
+    return false;
+  }
 }
 
 function toBase64(file) {
@@ -139,27 +149,42 @@ export default function App() {
 
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, []);
 
-  const loadAll = async () => {
-    // If a fetch is already in progress (e.g. from the polling interval), skip to avoid race conditions
-    if (isFetching.current) return;
+  // Silently wipe photo data from submissions older than 48 hours.
+  // Keeps the record and points intact — just frees up the database storage.
+  const cleanOldPhotos = async () => {
+    try {
+      const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      // Fetch old submissions that still have photos
+      const old = await sbGet("submissions", `select=id&created_at=lt.${cutoff}&before_img=not.is.null`);
+      if (Array.isArray(old) && old.length > 0) {
+        await Promise.all(old.map(row =>
+          sbUpdate("submissions", { id: row.id }, { before_img: null, after_img: null })
+        ));
+      }
+    } catch (err) {
+      console.warn("cleanOldPhotos failed (non-critical):", err);
+    }
+  };
+
+  // forceLoad: bypasses the isFetching guard — used after admin actions so they never silently skip
+  const doFetch = async () => {
     isFetching.current = true;
     try {
       const [m, s, b, p, rd, a, q, qa, ex, ds, asgn, fb, rr] = await Promise.all([
         sbGet("members", "select=name&order=created_at.asc"),
-        sbGet("submissions", "select=*&order=created_at.desc"),
+        sbGet("submissions", "select=id,member,challenge_label,points,bonus_id,note,status,date,submission_type,description,suggested_points,reject_reason,created_at&order=created_at.desc"),
         sbGet("bonuses", "select=*&order=id.desc"),
         sbGet("prizes", "select=*&order=id.asc"),
         sbGet("point_redemptions", "select=*&order=created_at.desc"),
         sbGet("announcements", "select=message&id=eq.1"),
         sbGet("questions", "select=*&order=created_at.desc"),
         sbGet("question_answers", "select=*&order=created_at.desc"),
-        sbGet("expectations", "select=*&order=created_at.desc"),
+        sbGet("expectations", "select=id,title,description,imgs,img,created_at&order=created_at.desc"),
         sbGet("daily_standards", "select=*&order=id.asc"),
         sbGet("assignments", "select=*&order=created_at.desc"),
         sbGet("feedback", "select=*&order=created_at.desc"),
         sbGet("redemption_requests", "select=*&order=created_at.desc"),
       ]);
-
       const newSubs = Array.isArray(s) ? s : [];
       const newPending = newSubs.filter(x => x.status === "pending").length;
       if (newPending > prevPendingCount.current && prevPendingCount.current >= 0 && !loading) {
@@ -167,9 +192,6 @@ export default function App() {
         setTimeout(() => setNewSubmissionAlert(false), 5000);
       }
       prevPendingCount.current = newPending;
-
-      // Batch ALL state updates together so React renders once with fully consistent data.
-      // This eliminates the flicker where points show wrong values mid-render.
       setMembers(Array.isArray(m) ? m.map(x => x.name) : []);
       setSubmissions(newSubs);
       setBonuses(Array.isArray(b) ? b : []);
@@ -184,15 +206,26 @@ export default function App() {
       setFeedback(Array.isArray(fb) ? fb : []);
       setRedemptionRequests(Array.isArray(rr) ? rr : []);
     } catch (err) {
-      console.error("loadAll failed:", err);
+      console.error("fetch failed:", err);
     } finally {
       setLoading(false);
       isFetching.current = false;
     }
   };
 
-  // Poll every 15 seconds. The isFetching guard inside loadAll prevents overlap with manual refreshes.
-  useEffect(() => { loadAll(); const t = setInterval(loadAll, 15000); return () => clearInterval(t); }, []);
+  // loadAll: used by polling — skips if a fetch is already running
+  const loadAll = async () => {
+    if (isFetching.current) return;
+    await doFetch();
+  };
+
+  // Poll every 15 seconds. doFetch's isFetching guard prevents overlap with manual refreshes.
+  // Also run photo cleanup on every poll cycle (non-blocking).
+  useEffect(() => {
+    doFetch();
+    const t = setInterval(() => { loadAll(); cleanOldPhotos(); }, 15000);
+    return () => clearInterval(t);
+  }, []);
 
   const getSpentPoints = (name) => redemptions.filter(r => r.member === name).reduce((sum, r) => sum + r.points, 0);
   const getEarnedPoints = (name) => {
@@ -211,24 +244,24 @@ export default function App() {
 
   const approveSubmission = async (id, customPoints) => {
     const sub = submissions.find(s => s.id === id);
-    const pts = customPoints !== undefined ? customPoints : sub.points;
+    if (!sub) { await doFetch(); return; } // submission already gone — just refresh
+    const pts = customPoints !== undefined ? customPoints : (sub.points || 0);
     await sbUpdate("submissions", { id }, { status: "approved", points: pts });
-    if (sub?.bonus_id) await sbUpdate("bonuses", { id: sub.bonus_id }, { claimed_by: sub.member });
-    // Always await so the leaderboard re-renders only after fresh data arrives — no more flicker
-    await loadAll();
+    if (sub.bonus_id) await sbUpdate("bonuses", { id: sub.bonus_id }, { claimed_by: sub.member });
+    await doFetch(); // use doFetch so this always runs even if polling is mid-flight
   };
   const rejectSubmission = async (id, reason) => {
     await sbUpdate("submissions", { id }, { status: "rejected", reject_reason: reason || null });
-    await loadAll();
+    await doFetch();
   };
-  const deleteSubmission = async (id) => { await sbDelete("submissions", { id }); await loadAll(); };
+  const deleteSubmission = async (id) => { await sbDelete("submissions", { id }); await doFetch(); };
   const deleteMember = async (name) => {
     await sbDelete("members", { name });
     await sbDelete("submissions", { member: name });
     await sbDelete("question_answers", { member: name });
     await sbDelete("point_redemptions", { member: name });
     if (currentUser === name) { setCurrentUser(null); localStorage.removeItem("sc_user"); }
-    await loadAll();
+    await doFetch();
   };
 
   if (loading) return (
@@ -248,10 +281,10 @@ export default function App() {
           {screen === "submit" && currentUser && <SubmitScreen currentUser={currentUser} submissions={submissions} activeBonuses={activeBonuses} loadAll={loadAll} initialBonusId={pendingBonusId} />}
           {screen === "submit" && !currentUser && <GateScreen setScreen={setScreen} />}
           {screen === "leaderboard" && <LeaderboardScreen leaderboard={leaderboard} totalPoints={totalPoints} members={members} />}
-          {screen === "prizes" && <PrizesScreen prizes={prizes} />}
+          {screen === "prizes" && <PrizesScreen prizes={prizes} currentUser={currentUser} getPoints={getPoints} loadAll={loadAll} />}
           {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} setPendingBonusId={setPendingBonusId} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
           {screen === "expectations" && <ExpectationsScreen expectations={expectations} />}
-          {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} />}
+          {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} redemptionRequests={redemptionRequests} />}
           {screen === "adminlogin" && <AdminLogin setIsAdmin={setIsAdmin} setScreen={setScreen} />}
         </div>
         <BottomNav screen={screen} setScreen={setScreen} isAdmin={isAdmin} activeBonuses={activeBonuses} activeQuestions={activeQuestions} pendingCount={pendingCount} />
@@ -297,6 +330,7 @@ function BottomNav({ screen, setScreen, isAdmin, activeBonuses, activeQuestions,
     { id: "submit", icon: "📸", label: "Submit" },
     { id: "bonuses", icon: "🔥", label: "Bonus", dot: hasDot, active: isBonusScreen },
     { id: "prizes", icon: "🎁", label: "Prizes" },
+    { id: "rules", icon: "📋", label: "Rules" },
     { id: "expectations", icon: "👁", label: "Expect" },
   ];
   if (isAdmin) tabs.push({ id: "admin", icon: "⚙️", label: `Admin${pendingCount > 0 ? ` (${pendingCount})` : ""}` });
@@ -488,6 +522,7 @@ function BonusesScreen({ bonuses, activeBonuses, questions, currentUser, questio
                   </div>
                   <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 26, textAlign: "right", lineHeight: 1.1 }}>+{b.points}<br /><span style={{ fontSize: 11, fontWeight: 400, color: "#fca5a5" }}>pts</span></div>
                 </div>
+                {b.photo && <img src={b.photo} alt="bonus reference" onClick={e => e.stopPropagation()} style={{ width: "100%", maxHeight: 180, objectFit: "cover", borderRadius: 10, marginTop: 10 }} />}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.1)" }}>
                   <span style={{ background: urgent ? "#dc2626" : "#b45309", color: "#fff", borderRadius: 20, padding: "4px 12px", fontSize: 12, fontWeight: 700 }}>⏱ {tl}</span>
                   <span style={{ color: "#94a3b8", fontSize: 12 }}>🏁 First to complete wins!</span>
@@ -641,6 +676,57 @@ function JoinScreen({ members, setCurrentUser, setScreen, loadAll }) {
   );
 }
 
+function SubmissionCard({ s, statusStyle }) {
+  const [lightbox, setLightbox] = useState(null);
+  const [expanded, setExpanded] = useState(false);
+  const [photos, setPhotos] = useState(null);
+  const [photosLoading, setPhotosLoading] = useState(false);
+
+  const loadPhotos = async () => {
+    if (photos !== null || photosLoading) return;
+    setPhotosLoading(true);
+    try {
+      const res = await sbGet("submissions", `select=before_img,after_img&id=eq.${s.id}`);
+      setPhotos(Array.isArray(res) && res[0] ? res[0] : {});
+    } catch { setPhotos({}); }
+    setPhotosLoading(false);
+  };
+
+  return (
+    <div style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10 }}>
+      <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <span style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 14, flex: 1 }}>{s.challenge_label}</span>
+        <span style={{ borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", marginLeft: 8, ...statusStyle(s.status) }}>{s.status}</span>
+      </div>
+      <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>{s.date}{s.points > 0 ? ` · +${s.points} pts` : " · pts TBD"}</div>
+      {s.description && <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 6, fontStyle: "italic" }}>"{s.description}"</div>}
+      {s.status === "rejected" && s.reject_reason && (
+        <div style={{ background: "#450a0a", borderRadius: 8, padding: "8px 12px", marginTop: 8, color: "#fca5a5", fontSize: 13 }}>
+          ❌ Reason: {s.reject_reason}
+        </div>
+      )}
+      <button onClick={() => { setExpanded(!expanded); if (!expanded) loadPhotos(); }}
+        style={{ width: "100%", background: "#0f172a", border: "1px solid #334155", color: "#60a5fa", borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer", marginTop: 12 }}>
+        {expanded ? "▲ Hide Photos" : "▼ View Photos"}
+      </button>
+      {expanded && (
+        <>
+          {photosLoading && <div style={{ color: "#64748b", fontSize: 13, textAlign: "center", padding: "12px 0" }}>⏳ Loading...</div>}
+          {photos && (
+            <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+              {photos.before_img && <img src={photos.before_img} alt="before" onClick={() => setLightbox(photos.before_img)} style={{ width: "calc(50% - 5px)", height: 90, objectFit: "cover", borderRadius: 8, cursor: "zoom-in" }} />}
+              {photos.after_img && <img src={photos.after_img} alt="after" onClick={() => setLightbox(photos.after_img)} style={{ width: "calc(50% - 5px)", height: 90, objectFit: "cover", borderRadius: 8, cursor: "zoom-in" }} />}
+            </div>
+          )}
+          {photos && !photos.before_img && !photos.after_img && <div style={{ color: "#475569", fontSize: 12, textAlign: "center", padding: "8px 0" }}>📷 Photos expired or unavailable</div>}
+          {photos && (photos.before_img || photos.after_img) && <div style={{ color: "#475569", fontSize: 11, textAlign: "center", marginTop: 6 }}>Tap to view full size</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function RulesScreen() {
   const categories = [...new Set(CHALLENGES.map(c => c.category))];
   return (
@@ -691,6 +777,27 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initia
   const [saving, setSaving] = useState(false);
   const beforeRef = useRef();
   const afterRef = useRef();
+  const bothRef = useRef();
+
+  // Pick two photos at once from library — first selected = before, second = after
+  const handleBothImgs = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    setError("");
+    try {
+      if (files.length >= 2) {
+        const [b, a] = await Promise.all([toBase64(files[0]), toBase64(files[1])]);
+        setBeforeImg(b); setAfterImg(a);
+      } else {
+        const b = await toBase64(files[0]);
+        setBeforeImg(b);
+        setError("Only one photo selected — please also pick your After photo.");
+      }
+    } catch (err) {
+      setError(err.message || "Failed to process photos.");
+    }
+    e.target.value = "";
+  };
 
   const handleImg = async (e, type) => {
     const file = e.target.files[0];
@@ -724,6 +831,7 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initia
         label = "🔥 BONUS: " + bonus.label; points = bonus.points; subBonusId = bonus.id;
       } else {
         const ch = CHALLENGES.find(c => c.id === parseInt(challenge));
+        if (!ch) { setError("Invalid task selected. Please choose again."); setSaving(false); return; }
         label = ch.label; points = ch.points;
       }
     }
@@ -740,7 +848,7 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initia
       }
       await loadAll();
       setSubmitted(true); setSaving(false);
-      setChallenge(""); setBonusId(""); setBeforeImg(null); setAfterImg(null); setNote(""); setAbDescription(""); setAbSuggestedPts("");
+      setChallenge(""); setBonusId(""); setBeforeImg(null); setAfterImg(null); setNote(""); setAbDescription("");
     } catch (err) {
       setError("Submission failed. Please check your connection and try again.");
       setSaving(false);
@@ -748,7 +856,7 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initia
   };
 
   const mySubmissions = submissions.filter(s => s.member === currentUser);
-  const statusStyle = s => ({ pending: { background: "#fef3c7", color: "#92400e" }, approved: { background: "#d1fae5", color: "#065f46" }, rejected: { background: "#fee2e2", color: "#991b1b" } })[s];
+  const statusStyle = s => ({ pending: { background: "#fef3c7", color: "#92400e" }, approved: { background: "#d1fae5", color: "#065f46" }, rejected: { background: "#fee2e2", color: "#991b1b" } })[s] || { background: "#1e293b", color: "#94a3b8" };
 
   return (
     <div style={{ padding: 16 }}>
@@ -803,8 +911,9 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initia
             <label style={S.label}>What Did You Do?</label>
             <textarea style={{ ...S.input, minHeight: 90, resize: "vertical", fontFamily: "inherit", lineHeight: 1.6 }}
               placeholder="Describe what you did and why it should count for points..." value={abDescription} onChange={e => { setAbDescription(e.target.value); setError(""); }} />
-            <label style={S.label}>Suggested Points (optional)</label>
-            <input style={S.input} type="number" placeholder="How many points do you think you deserve?" value={abSuggestedPts} onChange={e => setAbSuggestedPts(e.target.value)} />
+            <div style={{ background: "rgba(124,58,237,0.15)", border: "1px solid #7c3aed", borderRadius: 10, padding: "10px 14px", marginTop: 8 }}>
+              <div style={{ color: "#c4b5fd", fontSize: 13 }}>💡 Your Team Lead will review and assign points based on what you submit.</div>
+            </div>
           </>
         )}
 
@@ -825,6 +934,9 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initia
             </div>
           ))}
         </div>
+        <button style={{ width: "100%", background: "#0f172a", border: "2px dashed #3b82f6", color: "#60a5fa", borderRadius: 10, padding: "11px 0", fontSize: 13, cursor: "pointer", fontWeight: 600, marginTop: 8 }}
+          onClick={() => bothRef.current.click()}>📁 Pick Both from Library at Once</button>
+        <input ref={bothRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleBothImgs} />
         <label style={S.label}>Note (optional)</label>
         <input style={S.input} placeholder="Aisle #, location, etc." value={note} onChange={e => setNote(e.target.value)} />
         {error && <div style={S.errorMsg}>{error}</div>}
@@ -836,23 +948,7 @@ function SubmitScreen({ currentUser, submissions, activeBonuses, loadAll, initia
         <div>
           <div style={S.sectionTitle}>My Submissions</div>
           {mySubmissions.map(s => (
-            <div key={s.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <span style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 14, flex: 1 }}>{s.challenge_label}</span>
-                <span style={{ borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", marginLeft: 8, ...statusStyle(s.status) }}>{s.status}</span>
-              </div>
-              <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>{s.date}{s.points > 0 ? ` · +${s.points} pts` : " · pts TBD"}</div>
-              {s.description && <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 6, fontStyle: "italic" }}>"{s.description}"</div>}
-              {s.status === "rejected" && s.reject_reason && (
-                <div style={{ background: "#450a0a", borderRadius: 8, padding: "8px 12px", marginTop: 8, color: "#fca5a5", fontSize: 13 }}>
-                  ❌ Reason: {s.reject_reason}
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-                {s.before_img && <img src={s.before_img} alt="before" style={{ width: "calc(50% - 5px)", height: 90, objectFit: "cover", borderRadius: 8 }} />}
-                {s.after_img && <img src={s.after_img} alt="after" style={{ width: "calc(50% - 5px)", height: 90, objectFit: "cover", borderRadius: 8 }} />}
-              </div>
-            </div>
+            <SubmissionCard key={s.id} s={s} statusStyle={statusStyle} />
           ))}
         </div>
       )}
@@ -889,32 +985,153 @@ function LeaderboardScreen({ leaderboard, totalPoints, members }) {
   );
 }
 
-function PrizesScreen({ prizes }) {
+function PrizesScreen({ prizes, currentUser, getPoints, loadAll }) {
   const individual = prizes.filter(p => p.individual && p.active);
   const team = prizes.filter(p => !p.individual && p.active);
+  const [requesting, setRequesting] = useState(null); // prize being requested
+  const [reqNote, setReqNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [success, setSuccess] = useState("");
+
+  const myPoints = currentUser ? (getPoints ? getPoints(currentUser) : 0) : 0;
+
+  const handleRequest = async () => {
+    if (!requesting || !currentUser) return;
+    setSubmitting(true);
+    await sbInsert("redemption_requests", {
+      id: Date.now() * 1000 + Math.floor(Math.random() * 1000),
+      member: currentUser,
+      prize_label: requesting.mystery ? "Mystery Prize" : requesting.label,
+      prize_cost: requesting.cost,
+      note: reqNote.trim() || null,
+      status: "pending",
+      requested_at: new Date().toLocaleString()
+    });
+    await loadAll();
+    setSuccess(`✅ Request sent for "${requesting.mystery ? "Mystery Prize" : requesting.label}"! Your Team Lead will review it.`);
+    setRequesting(null); setReqNote(""); setSubmitting(false);
+    setTimeout(() => setSuccess(""), 5000);
+  };
+
   return (
     <div style={{ padding: 16 }}>
+      {requesting && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 9000, display: "flex", alignItems: "flex-end" }}>
+          <div style={{ background: "#1e293b", borderRadius: "20px 20px 0 0", padding: 24, width: "100%", boxSizing: "border-box" }}>
+            <div style={{ color: "#f1f5f9", fontWeight: 800, fontSize: 18, marginBottom: 4 }}>🎁 Request Redemption</div>
+            <div style={{ color: "#94a3b8", fontSize: 14, marginBottom: 16 }}>{requesting.mystery ? "Mystery Prize" : requesting.label} · {requesting.cost} pts</div>
+            {requesting.label && requesting.label.toLowerCase().includes("break") && (
+              <div style={{ background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
+                <div style={{ color: "#fbbf24", fontWeight: 700, fontSize: 13, marginBottom: 4 }}>⏰ Extra Break Reminder</div>
+                <div style={{ color: "#fde68a", fontSize: 13 }}>You must specify the day you want to use this break below. It is not approved until your Team Lead confirms.</div>
+              </div>
+            )}
+            <label style={S.label}>Note / Date (optional but recommended)</label>
+            <input style={S.input} placeholder={requesting.label && requesting.label.toLowerCase().includes("break") ? "e.g. I'd like to use this on Friday 4/11" : "Any details for your Team Lead..."} value={reqNote} onChange={e => setReqNote(e.target.value)} />
+            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+              <button style={{ flex: 2, background: "linear-gradient(135deg,#7c3aed,#a855f7)", color: "#fff", border: "none", borderRadius: 12, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.6 : 1 }} onClick={handleRequest} disabled={submitting}>{submitting ? "Sending..." : "Send Request 🚀"}</button>
+              <button style={{ flex: 1, background: "#334155", color: "#94a3b8", border: "none", borderRadius: 12, padding: "14px 0", fontSize: 14, cursor: "pointer" }} onClick={() => { setRequesting(null); setReqNote(""); }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ background: "linear-gradient(135deg,#4c1d95,#7c3aed)", borderRadius: 20, padding: "24px 20px", textAlign: "center", marginBottom: 20 }}>
         <div style={{ color: "#fff", fontWeight: 800, fontSize: 22 }}>🎁 Prize Shop</div>
         <div style={{ color: "#ddd6fe", fontSize: 13, marginTop: 4 }}>Spend your points or pool with the team!</div>
+        {currentUser && <div style={{ marginTop: 10, background: "rgba(255,255,255,0.15)", borderRadius: 20, padding: "4px 16px", display: "inline-block", color: "#fff", fontSize: 14, fontWeight: 600 }}>Your balance: {myPoints} pts</div>}
       </div>
+      {success && <div style={{ background: "#065f46", color: "#d1fae5", borderRadius: 12, padding: "12px 16px", marginBottom: 16, fontSize: 14, fontWeight: 600 }}>{success}</div>}
       {[{ title: "🙋 Individual Prizes", items: individual, bg: "#1e293b" }, { title: "👥 Team Prizes (Pool Points)", items: team, bg: "linear-gradient(135deg,#1e3a5f,#1e40af)" }].map(section => (
         <div key={section.title} style={{ marginBottom: 20 }}>
           <div style={S.sectionTitle}>{section.title}</div>
           {section.items.length === 0 && <div style={{ color: "#64748b", fontSize: 13 }}>No prizes yet.</div>}
           {section.items.map(p => (
-            <div key={p.id} style={{ background: section.bg, borderRadius: 14, padding: "16px 20px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ color: "#f1f5f9", fontWeight: 600, fontSize: 15, flex: 1, filter: p.mystery ? "blur(5px)" : "none", userSelect: p.mystery ? "none" : "auto" }}>{p.mystery ? "Mystery Prize" : p.label}</span>
-              {p.mystery && <span style={{ color: "#fbbf24", fontSize: 13, marginRight: 8 }}>🎁</span>}
-              <span style={{ background: "#7c3aed", color: "#fff", borderRadius: 20, padding: "4px 14px", fontSize: 13, fontWeight: 700 }}>{p.cost} pts</span>
+            <div key={p.id} style={{ background: section.bg, borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "#f1f5f9", fontWeight: 600, fontSize: 15, flex: 1, filter: p.mystery ? "blur(5px)" : "none", userSelect: p.mystery ? "none" : "auto" }}>{p.mystery ? "Mystery Prize" : p.label}</span>
+                {p.mystery && <span style={{ color: "#fbbf24", fontSize: 13, marginRight: 8 }}>🎁</span>}
+                <span style={{ background: "#7c3aed", color: "#fff", borderRadius: 20, padding: "4px 14px", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{p.cost} pts</span>
+              </div>
+              {currentUser && (
+                <button
+                  style={{ width: "100%", marginTop: 10, background: myPoints >= p.cost ? "linear-gradient(135deg,#065f46,#10b981)" : "#1e293b", border: myPoints >= p.cost ? "none" : "1px solid #334155", color: myPoints >= p.cost ? "#d1fae5" : "#475569", borderRadius: 10, padding: "9px 0", fontSize: 13, fontWeight: 700, cursor: myPoints >= p.cost ? "pointer" : "default" }}
+                  onClick={() => myPoints >= p.cost && setRequesting(p)}>
+                  {myPoints >= p.cost ? "🙋 Request Redemption" : `Need ${p.cost - myPoints} more pts`}
+                </button>
+              )}
             </div>
           ))}
         </div>
       ))}
       <div style={{ background: "#1e293b", borderRadius: 16, padding: 20 }}>
         <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 15, marginBottom: 8 }}>💡 How to Redeem</div>
-        <p style={{ color: "#cbd5e1", fontSize: 14, margin: 0 }}>See your team lead to redeem prizes. Individual prizes use your own balance. Team prizes require pooling everyone's points together.</p>
+        <p style={{ color: "#cbd5e1", fontSize: 14, margin: 0, lineHeight: 1.7 }}>Tap "Request Redemption" on any prize you can afford. Your Team Lead will review and approve it. All redemptions are at Team Lead discretion — ask if you have questions!</p>
       </div>
+    </div>
+  );
+}
+
+function AdminRedemptionRequests({ requests, loadAll, getPoints }) {
+  const pending = requests.filter(r => r.status === "pending");
+  const reviewed = requests.filter(r => r.status !== "pending");
+
+  const handleApprove = async (r) => {
+    await sbUpdate("redemption_requests", { id: r.id }, { status: "approved", reviewed_at: new Date().toLocaleString() });
+    await loadAll();
+  };
+  const handleDeny = async (r) => {
+    await sbUpdate("redemption_requests", { id: r.id }, { status: "denied", reviewed_at: new Date().toLocaleString() });
+    await loadAll();
+  };
+
+  return (
+    <div>
+      <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 16 }}>Review prize redemption requests from your team.</div>
+      {pending.length === 0 && <div style={S.emptyMsg}>No pending requests 🎉</div>}
+      {pending.map(r => {
+        const available = getPoints ? getPoints(r.member) : 0;
+        const canAfford = available >= r.prize_cost;
+        return (
+          <div key={r.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10, border: "1px solid #7c3aed" }}>
+            <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, marginBottom: 4 }}>🙋 REDEMPTION REQUEST</div>
+            <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 15 }}>{r.member}</div>
+            <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 4 }}>{r.prize_label}</div>
+            <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{r.prize_cost} pts · Requested {r.requested_at}</div>
+            <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 8, background: canAfford ? "#065f46" : "#7f1d1d", display: "inline-block" }}>
+              <span style={{ color: canAfford ? "#4ade80" : "#f87171", fontSize: 12, fontWeight: 700 }}>
+                {canAfford ? `✅ Has ${available} pts (can afford)` : `❌ Only has ${available} pts — cannot afford`}
+              </span>
+            </div>
+            {r.note && <div style={{ background: "#0f172a", borderRadius: 8, padding: "8px 12px", marginTop: 8, color: "#94a3b8", fontSize: 13 }}>📝 {r.note}</div>}
+            {r.prize_label && r.prize_label.toLowerCase().includes("break") && (
+              <div style={{ background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 12px", marginTop: 8 }}>
+                <div style={{ color: "#fbbf24", fontSize: 12, fontWeight: 700 }}>⏰ Break Request — verify the date above before approving</div>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+              <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={() => handleApprove(r)}>✅ Approve</button>
+              <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={() => handleDeny(r)}>❌ Deny</button>
+            </div>
+          </div>
+        );
+      })}
+      {reviewed.length > 0 && (
+        <>
+          <div style={{ ...S.sectionTitle, marginTop: 20 }}>Past Requests</div>
+          {reviewed.map(r => (
+            <div key={r.id} style={{ background: "#1e293b", borderRadius: 12, padding: "12px 16px", marginBottom: 8, opacity: 0.7 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ color: "#f1f5f9", fontWeight: 600 }}>{r.member} — {r.prize_label}</div>
+                  <div style={{ color: "#64748b", fontSize: 12 }}>{r.prize_cost} pts · {r.reviewed_at || r.requested_at}</div>
+                  {r.note && <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>📝 {r.note}</div>}
+                </div>
+                <span style={{ color: r.status === "approved" ? "#4ade80" : "#f87171", fontWeight: 700, fontSize: 13 }}>{r.status === "approved" ? "✅ Approved" : "❌ Denied"}</span>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -935,17 +1152,19 @@ function AdminLogin({ setIsAdmin, setScreen }) {
   );
 }
 
-function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteSubmission, leaderboard, bonuses, loadAll, prizes, announcement, members, deleteMember, questions, questionAnswers, expectations, redemptions, getPoints, getEarnedPoints }) {
+function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteSubmission, leaderboard, bonuses, loadAll, prizes, announcement, members, deleteMember, questions, questionAnswers, expectations, redemptions, getPoints, getEarnedPoints, redemptionRequests }) {
   const pending = submissions.filter(s => s.status === "pending");
   const reviewed = submissions.filter(s => s.status !== "pending");
   const pendingQA = questionAnswers.filter(a => a.status === "pending");
   const [tab, setTab] = useState("pending");
 
+  const pendingRequests = (redemptionRequests || []).filter(r => r.status === "pending");
   const tabs = [
     ["pending", `Pending${(pending.length + pendingQA.length) > 0 ? ` (${pending.length + pendingQA.length})` : ""}`],
     ["reviewed", "Reviewed"], ["bonuses", "🔥 Bonuses"], ["questions", "❓ Q's"],
     ["prizes", "🎁 Prizes"], ["announce", "📣"], ["members", "👥 Members"],
-    ["cashout", "💰 Cash Out"], ["expectations", "📸 Expect"], ["board", "Standings"]
+    ["cashout", "💰 Cash Out"], ["requests", `🙋 Requests${pendingRequests.length > 0 ? ` (${pendingRequests.length})` : ""}`],
+    ["expectations", "📸 Expect"], ["board", "Standings"]
   ];
 
   return (
@@ -978,6 +1197,7 @@ function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteS
       {tab === "announce" && <AdminAnnouncement announcement={announcement} loadAll={loadAll} />}
       {tab === "members" && <AdminMembers members={members} leaderboard={leaderboard} deleteMember={deleteMember} submissions={submissions} questionAnswers={questionAnswers} />}
       {tab === "cashout" && <AdminCashOut leaderboard={leaderboard} redemptions={redemptions} loadAll={loadAll} getPoints={getPoints} getEarnedPoints={getEarnedPoints} />}
+      {tab === "requests" && <AdminRedemptionRequests requests={redemptionRequests || []} loadAll={loadAll} getPoints={getPoints} />}
       {tab === "expectations" && <AdminExpectations expectations={expectations} loadAll={loadAll} />}
       {tab === "board" && leaderboard.map((m, i) => (
         <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 14, background: "#1e293b", borderRadius: 12, padding: "14px 16px", marginBottom: 8 }}>
@@ -1417,12 +1637,21 @@ function AdminQuestions({ questions, questionAnswers, loadAll }) {
 function AdminBonuses({ bonuses, loadAll }) {
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState({ label: "", description: "", points: "", icon: "⭐", startTime: "", endTime: "", active: true });
+  const [form, setForm] = useState({ label: "", description: "", points: "", icon: "⭐", startTime: "", endTime: "", active: true, photo: null });
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const bonusImgRef = useRef();
 
-  const resetForm = () => { setForm({ label: "", description: "", points: "", icon: "⭐", startTime: "", endTime: "", active: true }); setEditId(null); setError(""); };
-  const openEdit = (b) => { setForm({ label: b.label, description: b.description || "", points: String(b.points), icon: b.icon || "⭐", startTime: b.start_time, endTime: b.end_time, active: b.active }); setEditId(b.id); setShowForm(true); };
+  const resetForm = () => { setForm({ label: "", description: "", points: "", icon: "⭐", startTime: "", endTime: "", active: true, photo: null }); setEditId(null); setError(""); };
+  const openEdit = (b) => { setForm({ label: b.label, description: b.description || "", points: String(b.points), icon: b.icon || "⭐", startTime: b.start_time, endTime: b.end_time, active: b.active, photo: b.photo || null }); setEditId(b.id); setShowForm(true); };
+
+  const handleBonusImg = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try { const b64 = await toBase64(file); setForm(f => ({ ...f, photo: b64 })); }
+    catch (err) { setError(err.message || "Could not load photo."); }
+    e.target.value = "";
+  };
 
   const handleSave = async () => {
     if (!form.label.trim()) { setError("Add a title."); return; }
@@ -1430,7 +1659,7 @@ function AdminBonuses({ bonuses, loadAll }) {
     if (!form.startTime || !form.endTime) { setError("Set start and end times."); return; }
     if (new Date(form.endTime) <= new Date(form.startTime)) { setError("End time must be after start time."); return; }
     setSaving(true);
-    const data = { label: form.label, description: form.description, points: parseInt(form.points), icon: form.icon, start_time: form.startTime, end_time: form.endTime, active: form.active };
+    const data = { label: form.label, description: form.description, points: parseInt(form.points), icon: form.icon, start_time: form.startTime, end_time: form.endTime, active: form.active, photo: form.photo || null };
     if (editId) { await sbUpdate("bonuses", { id: editId }, data); }
     else { await sbInsert("bonuses", { id: Date.now(), ...data, claimed_by: null }); }
     await loadAll(); setShowForm(false); resetForm(); setSaving(false);
@@ -1459,6 +1688,18 @@ function AdminBonuses({ bonuses, loadAll }) {
           <input style={S.input} placeholder="e.g. Speed Stocking Blitz" value={form.label} onChange={e => { setForm(f => ({ ...f, label: e.target.value })); setError(""); }} />
           <label style={S.label}>Description</label>
           <input style={S.input} placeholder="e.g. Fully stock aisle 12 end cap" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+          <label style={S.label}>Reference Photo (optional)</label>
+          {form.photo
+            ? <div style={{ position: "relative", marginBottom: 8 }}>
+                <img src={form.photo} alt="bonus ref" style={{ width: "100%", maxHeight: 160, objectFit: "cover", borderRadius: 10 }} />
+                <button onClick={() => setForm(f => ({ ...f, photo: null }))} style={{ position: "absolute", top: 6, right: 6, background: "rgba(0,0,0,0.6)", border: "none", color: "#fff", borderRadius: "50%", width: 28, height: 28, fontSize: 16, cursor: "pointer" }}>×</button>
+              </div>
+            : <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+                <button style={{ flex: 1, background: "#0f172a", border: "2px dashed #334155", color: "#60a5fa", borderRadius: 10, padding: "10px 0", fontSize: 12, cursor: "pointer", fontWeight: 600 }} onClick={() => { bonusImgRef.current.removeAttribute("capture"); bonusImgRef.current.click(); }}>📁 Gallery</button>
+                <button style={{ flex: 1, background: "#0f172a", border: "2px dashed #334155", color: "#60a5fa", borderRadius: 10, padding: "10px 0", fontSize: 12, cursor: "pointer", fontWeight: 600 }} onClick={() => { bonusImgRef.current.setAttribute("capture", "environment"); bonusImgRef.current.click(); }}>📷 Camera</button>
+                <input ref={bonusImgRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBonusImg} />
+              </div>
+          }
           <label style={S.label}>Points</label>
           <input style={S.input} type="number" value={form.points} onChange={e => { setForm(f => ({ ...f, points: e.target.value })); setError(""); }} />
           <label style={S.label}>Start Time</label>
@@ -1523,8 +1764,21 @@ function ReviewCard({ s, approve, reject, readonly, onDelete }) {
   const [rejectReason, setRejectReason] = useState("");
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [customPoints, setCustomPoints] = useState(s.suggested_points ? String(s.suggested_points) : "");
-  const statusColor = { pending: "#f59e0b", approved: "#10b981", rejected: "#ef4444" }[s.status];
+  const [lightboxSrc, setLightboxSrc] = useState(null);
+  const [photos, setPhotos] = useState(null); // null = not yet loaded
+  const [photosLoading, setPhotosLoading] = useState(false);
+  const statusColor = { pending: "#f59e0b", approved: "#10b981", rejected: "#ef4444" }[s.status] || "#94a3b8";
   const isAboveBeyond = s.submission_type === "above_beyond";
+
+  const loadPhotos = async () => {
+    if (photos !== null || photosLoading) return;
+    setPhotosLoading(true);
+    try {
+      const res = await sbGet("submissions", `select=before_img,after_img&id=eq.${s.id}`);
+      setPhotos(Array.isArray(res) && res[0] ? res[0] : {});
+    } catch { setPhotos({}); }
+    setPhotosLoading(false);
+  };
 
   const handleReject = async () => {
     await reject(s.id, rejectReason);
@@ -1538,7 +1792,8 @@ function ReviewCard({ s, approve, reject, readonly, onDelete }) {
 
   return (
     <div style={{ ...S.reviewCard, ...(s.bonus_id ? { border: "1px solid #f59e0b" } : {}), ...(isAboveBeyond ? { border: "1px solid #a855f7" } : {}) }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", cursor: "pointer" }} onClick={() => setExpanded(!expanded)}>
+      <Lightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", cursor: "pointer" }} onClick={() => { setExpanded(!expanded); if (!expanded) loadPhotos(); }}>
         <div>
           {s.bonus_id && <div style={{ color: "#f59e0b", fontSize: 11, fontWeight: 700, marginBottom: 2 }}>🔥 BONUS</div>}
           {isAboveBeyond && <div style={{ color: "#a855f7", fontSize: 11, fontWeight: 700, marginBottom: 2 }}>⭐ ABOVE & BEYOND</div>}
@@ -1547,7 +1802,7 @@ function ReviewCard({ s, approve, reject, readonly, onDelete }) {
           <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{s.date}</div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ color: statusColor, fontWeight: 700, fontSize: 13 }}>{s.status.toUpperCase()}</div>
+          <div style={{ color: statusColor, fontWeight: 700, fontSize: 13 }}>{(s.status || "unknown").toUpperCase()}</div>
           <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 20 }}>{isAboveBeyond && s.status === "pending" ? "?" : `+${s.points}`}</div>
           <div style={{ color: "#94a3b8", fontSize: 11 }}>{expanded ? "▲" : "▼"}</div>
         </div>
@@ -1561,14 +1816,19 @@ function ReviewCard({ s, approve, reject, readonly, onDelete }) {
               {s.suggested_points && <div style={{ color: "#a78bfa", fontSize: 12, marginTop: 6 }}>💡 They suggested: {s.suggested_points} pts</div>}
             </div>
           )}
-          <div style={{ display: "flex", gap: 10 }}>
-            {["before_img", "after_img"].map((key, i) => s[key] && (
-              <div key={key} style={{ textAlign: "center", width: "calc(50% - 5px)" }}>
-                <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 4 }}>{i === 0 ? "BEFORE" : "AFTER"}</div>
-                <img src={s[key]} alt={key} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: 10 }} />
-              </div>
-            ))}
-          </div>
+          {photosLoading && <div style={{ color: "#64748b", fontSize: 13, textAlign: "center", padding: "16px 0" }}>⏳ Loading photos...</div>}
+          {photos && (
+            <div style={{ display: "flex", gap: 10 }}>
+              {["before_img", "after_img"].map((key, i) => photos[key] && (
+                <div key={key} style={{ textAlign: "center", width: "calc(50% - 5px)" }}>
+                  <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 4 }}>{i === 0 ? "BEFORE" : "AFTER"}</div>
+                  <img src={photos[key]} alt={key} onClick={() => setLightboxSrc(photos[key])} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: 10, cursor: "zoom-in" }} />
+                </div>
+              ))}
+            </div>
+          )}
+          {photos && (photos.before_img || photos.after_img) && <div style={{ color: "#475569", fontSize: 11, textAlign: "center", marginTop: 4 }}>Tap photos to view full size</div>}
+          {photos && !photos.before_img && !photos.after_img && <div style={{ color: "#475569", fontSize: 12, textAlign: "center", padding: "8px 0" }}>📷 Photos expired or unavailable</div>}
           {s.note && <div style={{ background: "#0f172a", borderRadius: 8, padding: "8px 12px", color: "#94a3b8", fontSize: 13, marginTop: 10 }}>📝 {s.note}</div>}
           {s.reject_reason && <div style={{ background: "#450a0a", borderRadius: 8, padding: "8px 12px", color: "#fca5a5", fontSize: 13, marginTop: 10 }}>❌ Rejection reason: {s.reject_reason}</div>}
 
@@ -1609,6 +1869,19 @@ function ReviewCard({ s, approve, reject, readonly, onDelete }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ── Lightbox: tap any photo to view full-screen with pinch-zoom support ──
+function Lightbox({ src, onClose }) {
+  if (!src) return null;
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", fontSize: 28, width: 44, height: 44, borderRadius: "50%", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000 }}>×</button>
+      <img src={src} alt="full view" onClick={e => e.stopPropagation()}
+        style={{ maxWidth: "95vw", maxHeight: "90vh", objectFit: "contain", borderRadius: 8, touchAction: "pinch-zoom" }} />
     </div>
   );
 }
@@ -1725,8 +1998,8 @@ function TasksScreen({ currentUser, dailyStandards, assignments, loadAll, isAdmi
 }
 
 function FeedbackScreen({ currentUser, loadAll }) {
-  const [message, setMessage] = React.useState("");
-  const [submitted, setSubmitted] = React.useState(false);
+  const [message, setMessage] = useState("");
+  const [submitted, setSubmitted] = useState(false);
 
   const submitFeedback = async () => {
   if (!message.trim()) return;
