@@ -1581,3 +1581,100 @@ const S = {
   tabBtnActive: { background: "#1d4ed8", color: "#fff" },
   reviewCard: { background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10 },
 };
+function TasksScreen({ currentUser, dailyStandards, assignments, loadAll, isAdmin, members }) {
+  const S2 = {
+    container: { padding: 16 },
+    sectionTitle: { color: "#94a3b8", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 14, marginTop: 24 },
+    card: { background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10, display: "flex", alignItems: "center", gap: 12 },
+    checkbox: { width: 24, height: 24, borderRadius: 6, border: "2px solid #334155", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+    checkboxDone: { width: 24, height: 24, borderRadius: 6, background: "#4f46e5", border: "2px solid #4f46e5", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+    label: { color: "#f1f5f9", fontSize: 15, flex: 1 },
+    claimedBy: { color: "#60a5fa", fontSize: 12, marginTop: 4 },
+    points: { color: "#fbbf24", fontWeight: 700, fontSize: 14 },
+    assignedBadge: { background: "#7c3aed", color: "#fff", borderRadius: 20, padding: "2px 10px", fontSize: 12, marginLeft: 8 },
+  };
+
+  const claimStandard = async (item) => {
+  if (item.claimed_by) return;
+  await sbUpdate("daily_standards", { id: item.id }, { claimed_by: currentUser, claimed_at: new Date().toISOString() });
+  loadAll();
+};
+
+  const myAssignments = assignments.filter(a => a.assigned_to === currentUser && !a.completed);
+
+  const completeAssignment = async (item) => {
+  await sbUpdate("assignments", { id: item.id }, { completed: true, completed_at: new Date().toISOString() });
+  loadAll();
+};
+
+  return (
+    <div style={S2.container}>
+      <div style={{ ...S2.sectionTitle, marginTop: 8 }}>📋 Daily Standards</div>
+      {dailyStandards.filter(d => d.active).map(item => (
+        <div key={item.id} style={S2.card}>
+          <div onClick={() => claimStandard(item)} style={item.claimed_by ? S2.checkboxDone : S2.checkbox}>
+            {item.claimed_by && <span style={{ color: "#fff", fontSize: 16 }}>✓</span>}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={S2.label}>{item.label}</div>
+            {item.claimed_by && <div style={S2.claimedBy}>Claimed by {item.claimed_by}</div>}
+          </div>
+          {item.points > 0 && <div style={S2.points}>+{item.points}</div>}
+        </div>
+      ))}
+      {dailyStandards.length === 0 && <div style={{ color: "#64748b", textAlign: "center", padding: 40 }}>No standards added yet.</div>}
+
+      {myAssignments.length > 0 && (
+        <>
+          <div style={S2.sectionTitle}>🎯 Your Assignments</div>
+          {myAssignments.map(item => (
+            <div key={item.id} style={{ ...S2.card, border: "1px solid #7c3aed" }}>
+              <div onClick={() => completeAssignment(item)} style={S2.checkbox}>
+                <span style={{ color: "#94a3b8", fontSize: 14 }}>○</span>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={S2.label}>{item.label}</div>
+              </div>
+              {item.points > 0 && <div style={S2.points}>+{item.points}</div>}
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function FeedbackScreen({ currentUser, loadAll }) {
+  const [message, setMessage] = React.useState("");
+  const [submitted, setSubmitted] = React.useState(false);
+
+  const submitFeedback = async () => {
+  if (!message.trim()) return;
+  await sbInsert("feedback", { member: currentUser, message: message.trim() });
+  setMessage("");
+  setSubmitted(true);
+  setTimeout(() => setSubmitted(false), 3000);
+  loadAll();
+};
+
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ background: "#1e293b", borderRadius: 20, padding: "24px 20px", marginBottom: 16 }}>
+        <div style={{ color: "#f1f5f9", fontWeight: 800, fontSize: 20, marginBottom: 4 }}>💬 Send Feedback</div>
+        <div style={{ color: "#94a3b8", fontSize: 13 }}>Report bugs, suggestions, or anything on your mind.</div>
+      </div>
+      {submitted && <div style={{ background: "#166534", color: "#fff", borderRadius: 12, padding: 16, marginBottom: 16, textAlign: "center" }}>✅ Feedback sent!</div>}
+      <div style={{ background: "#1e293b", borderRadius: 14, padding: 16 }}>
+        <textarea
+          value={message}
+          onChange={e => setMessage(e.target.value)}
+          placeholder="Describe the bug or suggestion..."
+          style={{ width: "100%", background: "#0f172a", border: "1px solid #334155", borderRadius: 10, color: "#f1f5f9", padding: "12px 14px", fontSize: 15, resize: "vertical", minHeight: 120, fontFamily: "inherit", lineHeight: 1.6, boxSizing: "border-box" }}
+        />
+        <button onClick={submitFeedback} style={{ width: "100%", background: "linear-gradient(135deg,#1d4ed8,#7c3aed)", color: "#fff", border: "none", borderRadius: 12, padding: "14px", fontSize: 15, fontWeight: 700, cursor: "pointer", marginTop: 12 }}>
+          Send Feedback
+        </button>
+      </div>
+    </div>
+  );
+}
