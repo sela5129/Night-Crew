@@ -130,6 +130,7 @@ export default function App() {
   const prevPendingCount = useRef(0);
   const [newSubmissionAlert, setNewSubmissionAlert] = useState(false);
   const [pendingBonusId, setPendingBonusId] = useState("");
+  const isFetching = useRef(false);
   
   const [dailyStandards, setDailyStandards] = useState([]);
   const [assignments, setAssignments] = useState([]);
@@ -139,50 +140,58 @@ export default function App() {
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, []);
 
   const loadAll = async () => {
-  try {
-  const [m, s, b, p, rd, a, q, qa, ex, ds, asgn, fb, rr] = await Promise.all([
-  sbGet("members", "select=name&order=created_at.asc"),
-  sbGet("submissions", "select=*&order=created_at.desc"),
-  sbGet("bonuses", "select=*&order=id.desc"),
-  sbGet("prizes", "select=*&order=id.asc"),
-  sbGet("point_redemptions", "select=*&order=created_at.desc"),
-  sbGet("announcements", "select=message&id=eq.1"),
-  sbGet("questions", "select=*&order=created_at.desc"),
-  sbGet("question_answers", "select=*&order=created_at.desc"),
-  sbGet("expectations", "select=*&order=created_at.desc"),
-  sbGet("daily_standards", "select=*&order=id.asc"),
-  sbGet("assignments", "select=*&order=created_at.desc"),
-  sbGet("feedback", "select=*&order=created_at.desc"),
-  sbGet("redemption_requests", "select=*&order=created_at.desc"),
-]);
-  setDailyStandards(Array.isArray(ds) ? ds : []);
-  setAssignments(Array.isArray(asgn) ? asgn : []);
-  setFeedback(Array.isArray(fb) ? fb : []);
-  setRedemptionRequests(Array.isArray(rr) ? rr : []);
-    const newSubs = Array.isArray(s) ? s : [];
-    const newPending = newSubs.filter(x => x.status === "pending").length;
-    if (newPending > prevPendingCount.current && prevPendingCount.current >= 0 && !loading) {
-      setNewSubmissionAlert(true);
-      setTimeout(() => setNewSubmissionAlert(false), 5000);
+    // If a fetch is already in progress (e.g. from the polling interval), skip to avoid race conditions
+    if (isFetching.current) return;
+    isFetching.current = true;
+    try {
+      const [m, s, b, p, rd, a, q, qa, ex, ds, asgn, fb, rr] = await Promise.all([
+        sbGet("members", "select=name&order=created_at.asc"),
+        sbGet("submissions", "select=*&order=created_at.desc"),
+        sbGet("bonuses", "select=*&order=id.desc"),
+        sbGet("prizes", "select=*&order=id.asc"),
+        sbGet("point_redemptions", "select=*&order=created_at.desc"),
+        sbGet("announcements", "select=message&id=eq.1"),
+        sbGet("questions", "select=*&order=created_at.desc"),
+        sbGet("question_answers", "select=*&order=created_at.desc"),
+        sbGet("expectations", "select=*&order=created_at.desc"),
+        sbGet("daily_standards", "select=*&order=id.asc"),
+        sbGet("assignments", "select=*&order=created_at.desc"),
+        sbGet("feedback", "select=*&order=created_at.desc"),
+        sbGet("redemption_requests", "select=*&order=created_at.desc"),
+      ]);
+
+      const newSubs = Array.isArray(s) ? s : [];
+      const newPending = newSubs.filter(x => x.status === "pending").length;
+      if (newPending > prevPendingCount.current && prevPendingCount.current >= 0 && !loading) {
+        setNewSubmissionAlert(true);
+        setTimeout(() => setNewSubmissionAlert(false), 5000);
+      }
+      prevPendingCount.current = newPending;
+
+      // Batch ALL state updates together so React renders once with fully consistent data.
+      // This eliminates the flicker where points show wrong values mid-render.
+      setMembers(Array.isArray(m) ? m.map(x => x.name) : []);
+      setSubmissions(newSubs);
+      setBonuses(Array.isArray(b) ? b : []);
+      setPrizes(Array.isArray(p) ? p : []);
+      setAnnouncement(Array.isArray(a) && a[0] ? a[0].message || "" : "");
+      setQuestions(Array.isArray(q) ? q : []);
+      setQuestionAnswers(Array.isArray(qa) ? qa : []);
+      setExpectations(Array.isArray(ex) ? ex : []);
+      setRedemptions(Array.isArray(rd) ? rd : []);
+      setDailyStandards(Array.isArray(ds) ? ds : []);
+      setAssignments(Array.isArray(asgn) ? asgn : []);
+      setFeedback(Array.isArray(fb) ? fb : []);
+      setRedemptionRequests(Array.isArray(rr) ? rr : []);
+    } catch (err) {
+      console.error("loadAll failed:", err);
+    } finally {
+      setLoading(false);
+      isFetching.current = false;
     }
-    prevPendingCount.current = newPending;
-    setMembers(Array.isArray(m) ? m.map(x => x.name) : []);
-    setSubmissions(newSubs);
-    setBonuses(Array.isArray(b) ? b : []);
-    setPrizes(Array.isArray(p) ? p : []);
-    setAnnouncement(Array.isArray(a) && a[0] ? a[0].message || "" : "");
-    setQuestions(Array.isArray(q) ? q : []);
-    setQuestionAnswers(Array.isArray(qa) ? qa : []);
-    setExpectations(Array.isArray(ex) ? ex : []);
-    setRedemptions(Array.isArray(rd) ? rd : []);
-  } catch (err) {
-    console.error("loadAll failed:", err);
-    // Don't crash — just keep showing whatever we already have
-  } finally {
-    setLoading(false);
-  }
   };
 
+  // Poll every 15 seconds. The isFetching guard inside loadAll prevents overlap with manual refreshes.
   useEffect(() => { loadAll(); const t = setInterval(loadAll, 15000); return () => clearInterval(t); }, []);
 
   const getSpentPoints = (name) => redemptions.filter(r => r.member === name).reduce((sum, r) => sum + r.points, 0);
@@ -205,20 +214,21 @@ export default function App() {
     const pts = customPoints !== undefined ? customPoints : sub.points;
     await sbUpdate("submissions", { id }, { status: "approved", points: pts });
     if (sub?.bonus_id) await sbUpdate("bonuses", { id: sub.bonus_id }, { claimed_by: sub.member });
-    loadAll();
+    // Always await so the leaderboard re-renders only after fresh data arrives — no more flicker
+    await loadAll();
   };
   const rejectSubmission = async (id, reason) => {
     await sbUpdate("submissions", { id }, { status: "rejected", reject_reason: reason || null });
-    loadAll();
+    await loadAll();
   };
-  const deleteSubmission = async (id) => { await sbDelete("submissions", { id }); loadAll(); };
+  const deleteSubmission = async (id) => { await sbDelete("submissions", { id }); await loadAll(); };
   const deleteMember = async (name) => {
     await sbDelete("members", { name });
     await sbDelete("submissions", { member: name });
     await sbDelete("question_answers", { member: name });
     await sbDelete("point_redemptions", { member: name });
     if (currentUser === name) { setCurrentUser(null); localStorage.removeItem("sc_user"); }
-    loadAll();
+    await loadAll();
   };
 
   if (loading) return (
@@ -1162,7 +1172,7 @@ function AdminExpectations({ expectations, loadAll }) {
               {e.description && <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 4, whiteSpace: "pre-wrap" }}>{e.description}</div>}
               <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                 <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer" }} onClick={() => openEdit(e)}>✏️ Edit</button>
-                <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("expectations", { id: e.id }); loadAll(); }}>🗑 Delete</button>
+                <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("expectations", { id: e.id }); await loadAll(); }}>🗑 Delete</button>
               </div>
             </div>
           </div>
@@ -1259,7 +1269,7 @@ function AdminPrizes({ prizes, loadAll }) {
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }} onClick={() => openEdit(p)}>✏️</button>
-              <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("prizes", { id: p.id }); loadAll(); }}>🗑</button>
+              <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("prizes", { id: p.id }); await loadAll(); }}>🗑</button>
             </div>
           </div>
         </div>
@@ -1341,8 +1351,8 @@ function AdminQuestions({ questions, questionAnswers, loadAll }) {
                 <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 4 }}>Q: {q?.question}</div>
                 <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 6, padding: "8px 12px", background: "#0f172a", borderRadius: 8 }}>{a.answer}</div>
                 <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-                  <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "approved", points: a.points }); loadAll(); }}>✅ Approve +{a.points} pts</button>
-                  <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "rejected", points: 0 }); loadAll(); }}>❌ Reject</button>
+                  <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "approved", points: a.points }); await loadAll(); }}>✅ Approve +{a.points} pts</button>
+                  <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "rejected", points: 0 }); await loadAll(); }}>❌ Reject</button>
                 </div>
               </div>
             );
@@ -1394,8 +1404,8 @@ function AdminQuestions({ questions, questionAnswers, loadAll }) {
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "6px 8px", fontSize: 12, cursor: "pointer" }} onClick={() => openEdit(q)}>✏️</button>
-              <button style={{ background: "#0f172a", border: "1px solid #334155", color: q.active ? "#f87171" : "#4ade80", borderRadius: 8, padding: "6px 8px", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbUpdate("questions", { id: q.id }, { active: !q.active }); loadAll(); }}>{q.active ? "⏸" : "▶️"}</button>
-              <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "6px 8px", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("questions", { id: q.id }); loadAll(); }}>🗑</button>
+              <button style={{ background: "#0f172a", border: "1px solid #334155", color: q.active ? "#f87171" : "#4ade80", borderRadius: 8, padding: "6px 8px", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbUpdate("questions", { id: q.id }, { active: !q.active }); await loadAll(); }}>{q.active ? "⏸" : "▶️"}</button>
+              <button style={{ background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "6px 8px", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("questions", { id: q.id }); await loadAll(); }}>🗑</button>
             </div>
           </div>
         </div>
@@ -1481,8 +1491,8 @@ function AdminBonuses({ bonuses, loadAll }) {
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 10, borderTop: "1px solid #334155" }}>
               <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#94a3b8", borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }} onClick={() => openEdit(b)}>✏️ Edit</button>
-              <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: b.active ? "#f87171" : "#4ade80", borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbUpdate("bonuses", { id: b.id }, { active: !b.active }); loadAll(); }}>{b.active ? "⏸ Off" : "▶️ On"}</button>
-              <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("bonuses", { id: b.id }); loadAll(); }}>🗑 Delete</button>
+              <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: b.active ? "#f87171" : "#4ade80", borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbUpdate("bonuses", { id: b.id }, { active: !b.active }); await loadAll(); }}>{b.active ? "⏸ Off" : "▶️ On"}</button>
+              <button style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", color: "#f87171", borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }} onClick={async () => { await sbDelete("bonuses", { id: b.id }); await loadAll(); }}>🗑 Delete</button>
             </div>
           </div>
         );
@@ -1500,8 +1510,8 @@ function QAReviewCard({ a, questions, loadAll }) {
       <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 4 }}>Q: {q?.question}</div>
       <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 6, padding: "8px 12px", background: "#0f172a", borderRadius: 8 }}>{a.answer}</div>
       <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-        <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "approved", points: a.points }); loadAll(); }}>✅ Approve +{a.points} pts</button>
-        <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "rejected", points: 0 }); loadAll(); }}>❌ Reject</button>
+        <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "approved", points: a.points }); await loadAll(); }}>✅ Approve +{a.points} pts</button>
+        <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={async () => { await sbUpdate("question_answers", { id: a.id }, { status: "rejected", points: 0 }); await loadAll(); }}>❌ Reject</button>
       </div>
     </div>
   );
@@ -1667,14 +1677,14 @@ function TasksScreen({ currentUser, dailyStandards, assignments, loadAll, isAdmi
   const claimStandard = async (item) => {
   if (item.claimed_by) return;
   await sbUpdate("daily_standards", { id: item.id }, { claimed_by: currentUser, claimed_at: new Date().toISOString() });
-  loadAll();
+  await loadAll();
 };
 
   const myAssignments = assignments.filter(a => a.assigned_to === currentUser && !a.completed);
 
   const completeAssignment = async (item) => {
   await sbUpdate("assignments", { id: item.id }, { completed: true, completed_at: new Date().toISOString() });
-  loadAll();
+  await loadAll();
 };
 
   return (
@@ -1724,7 +1734,7 @@ function FeedbackScreen({ currentUser, loadAll }) {
   setMessage("");
   setSubmitted(true);
   setTimeout(() => setSubmitted(false), 3000);
-  loadAll();
+  await loadAll();
 };
 
   return (
