@@ -146,6 +146,7 @@ export default function App() {
   const [assignments, setAssignments] = useState([]);
   const [feedback, setFeedback] = useState([]);
   const [redemptionRequests, setRedemptionRequests] = useState([]);
+  const [pledges, setPledges] = useState([]);
 
   useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(t); }, []);
 
@@ -170,7 +171,7 @@ export default function App() {
   const doFetch = async () => {
     isFetching.current = true;
     try {
-      const [m, s, b, p, rd, a, q, qa, ex, ds, asgn, fb, rr] = await Promise.all([
+      const [m, s, b, p, rd, a, q, qa, ex, ds, asgn, fb, rr, pl] = await Promise.all([
         sbGet("members", "select=name&order=created_at.asc"),
         sbGet("submissions", "select=id,member,challenge_label,points,bonus_id,note,status,date,submission_type,description,suggested_points,reject_reason,created_at&order=created_at.desc"),
         sbGet("bonuses", "select=*&order=id.desc"),
@@ -184,6 +185,7 @@ export default function App() {
         sbGet("assignments", "select=*&order=created_at.desc"),
         sbGet("feedback", "select=*&order=created_at.desc"),
         sbGet("redemption_requests", "select=*&order=created_at.desc"),
+        sbGet("team_pledges", "select=*&order=pledged_at.desc"),
       ]);
       const newSubs = Array.isArray(s) ? s : [];
       const newPending = newSubs.filter(x => x.status === "pending").length;
@@ -205,6 +207,7 @@ export default function App() {
       setAssignments(Array.isArray(asgn) ? asgn : []);
       setFeedback(Array.isArray(fb) ? fb : []);
       setRedemptionRequests(Array.isArray(rr) ? rr : []);
+      setPledges(Array.isArray(pl) ? pl : []);
     } catch (err) {
       console.error("fetch failed:", err);
     } finally {
@@ -281,10 +284,10 @@ export default function App() {
           {screen === "submit" && currentUser && <SubmitScreen currentUser={currentUser} submissions={submissions} activeBonuses={activeBonuses} loadAll={loadAll} initialBonusId={pendingBonusId} />}
           {screen === "submit" && !currentUser && <GateScreen setScreen={setScreen} />}
           {screen === "leaderboard" && <LeaderboardScreen leaderboard={leaderboard} totalPoints={totalPoints} members={members} />}
-          {screen === "prizes" && <PrizesScreen prizes={prizes} currentUser={currentUser} getPoints={getPoints} loadAll={loadAll} />}
+          {screen === "prizes" && <PrizesScreen prizes={prizes} currentUser={currentUser} getPoints={getPoints} loadAll={loadAll} leaderboard={leaderboard} pledges={pledges} />}
           {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} setPendingBonusId={setPendingBonusId} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
           {screen === "expectations" && <ExpectationsScreen expectations={expectations} />}
-          {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} redemptionRequests={redemptionRequests} />}
+          {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} refresh={doFetch} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} redemptionRequests={redemptionRequests} />}
           {screen === "adminlogin" && <AdminLogin setIsAdmin={setIsAdmin} setScreen={setScreen} />}
         </div>
         <BottomNav screen={screen} setScreen={setScreen} isAdmin={isAdmin} activeBonuses={activeBonuses} activeQuestions={activeQuestions} pendingCount={pendingCount} />
@@ -985,17 +988,32 @@ function LeaderboardScreen({ leaderboard, totalPoints, members }) {
   );
 }
 
-function PrizesScreen({ prizes, currentUser, getPoints, loadAll }) {
+function PrizesScreen({ prizes, currentUser, getPoints, loadAll, leaderboard, pledges }) {
   const individual = prizes.filter(p => p.individual && p.active);
   const team = prizes.filter(p => !p.individual && p.active);
-  const [requesting, setRequesting] = useState(null); // prize being requested
+  const [requesting, setRequesting] = useState(null); // individual prize being requested
   const [reqNote, setReqNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState("");
+  const [activeTab, setActiveTab] = useState("individual");
+  const [pledgingPrize, setPledgingPrize] = useState(null); // team prize being pledged to
+  const [pledgeAmount, setPledgeAmount] = useState("");
+  const [pledgeError, setPledgeError] = useState("");
 
-  const myPoints = currentUser ? (getPoints ? getPoints(currentUser) : 0) : 0;
+  const myPoints = currentUser && getPoints ? getPoints(currentUser) : 0;
 
-  const handleRequest = async () => {
+  // Get pledges for a specific prize
+  const prizePledges = (prizeId) => (pledges || []).filter(pl => pl.prize_id === prizeId);
+  const pledgeTotal = (prizeId) => prizePledges(prizeId).reduce((s, pl) => s + pl.amount, 0);
+  const myPledge = (prizeId) => (pledges || []).find(pl => pl.prize_id === prizeId && pl.member === currentUser);
+
+  // Points already committed to pledges (can't double-spend)
+  const myTotalPledged = (pledges || [])
+    .filter(pl => pl.member === currentUser)
+    .reduce((s, pl) => s + pl.amount, 0);
+  const myAvailablePoints = myPoints - myTotalPledged;
+
+  const handleIndividualRequest = async () => {
     if (!requesting || !currentUser) return;
     setSubmitting(true);
     await sbInsert("redemption_requests", {
@@ -1005,6 +1023,7 @@ function PrizesScreen({ prizes, currentUser, getPoints, loadAll }) {
       prize_cost: requesting.cost,
       note: reqNote.trim() || null,
       status: "pending",
+      is_team_prize: false,
       requested_at: new Date().toLocaleString()
     });
     await loadAll();
@@ -1013,70 +1032,255 @@ function PrizesScreen({ prizes, currentUser, getPoints, loadAll }) {
     setTimeout(() => setSuccess(""), 5000);
   };
 
+  const handlePledge = async () => {
+    const amt = parseInt(pledgeAmount);
+    if (!amt || amt <= 0) { setPledgeError("Enter a valid amount."); return; }
+    const existing = myPledge(pledgingPrize.id);
+    const currentPledged = existing ? existing.amount : 0;
+    const diff = amt - currentPledged; // how much more we need to lock up
+    if (diff > myAvailablePoints) {
+      setPledgeError(`You only have ${myAvailablePoints} pts available (${myTotalPledged > 0 ? `${myTotalPledged} already pledged elsewhere` : "after current pledges"}).`);
+      return;
+    }
+    if (amt > myPoints) { setPledgeError(`You only have ${myPoints} pts total.`); return; }
+    setSubmitting(true);
+    if (existing) {
+      await sbUpdate("team_pledges", { id: existing.id }, { amount: amt });
+    } else {
+      await sbInsert("team_pledges", {
+        id: Date.now() * 1000 + Math.floor(Math.random() * 1000),
+        prize_id: pledgingPrize.id,
+        prize_label: pledgingPrize.mystery ? "Mystery Prize" : pledgingPrize.label,
+        member: currentUser,
+        amount: amt,
+        pledged_at: new Date().toLocaleString()
+      });
+    }
+    await loadAll();
+    const total = pledgeTotal(pledgingPrize.id) - currentPledged + amt;
+    const goal = pledgingPrize.cost;
+    setSuccess(total >= goal
+      ? `🎉 Goal reached! The team has pledged ${total} / ${goal} pts. Ask your Team Lead to claim it!`
+      : `✅ Pledged ${amt} pts toward ${pledgingPrize.mystery ? "Mystery Prize" : pledgingPrize.label}!`
+    );
+    setPledgingPrize(null); setPledgeAmount(""); setPledgeError(""); setSubmitting(false);
+    setTimeout(() => setSuccess(""), 6000);
+  };
+
+  const handleRemovePledge = async (prizeId) => {
+    const existing = myPledge(prizeId);
+    if (!existing) return;
+    await sbDelete("team_pledges", { id: existing.id });
+    await loadAll();
+    setSuccess("Pledge removed.");
+    setTimeout(() => setSuccess(""), 3000);
+  };
+
   return (
     <div style={{ padding: 16 }}>
+
+      {/* ── Individual prize request sheet ── */}
       {requesting && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 9000, display: "flex", alignItems: "flex-end" }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 9000, display: "flex", alignItems: "flex-end" }}>
           <div style={{ background: "#1e293b", borderRadius: "20px 20px 0 0", padding: 24, width: "100%", boxSizing: "border-box" }}>
             <div style={{ color: "#f1f5f9", fontWeight: 800, fontSize: 18, marginBottom: 4 }}>🎁 Request Redemption</div>
             <div style={{ color: "#94a3b8", fontSize: 14, marginBottom: 16 }}>{requesting.mystery ? "Mystery Prize" : requesting.label} · {requesting.cost} pts</div>
             {requesting.label && requesting.label.toLowerCase().includes("break") && (
               <div style={{ background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
                 <div style={{ color: "#fbbf24", fontWeight: 700, fontSize: 13, marginBottom: 4 }}>⏰ Extra Break Reminder</div>
-                <div style={{ color: "#fde68a", fontSize: 13 }}>You must specify the day you want to use this break below. It is not approved until your Team Lead confirms.</div>
+                <div style={{ color: "#fde68a", fontSize: 13 }}>The specific day must be approved by your Team Lead before use.</div>
               </div>
             )}
-            <label style={S.label}>Note / Date (optional but recommended)</label>
+            <label style={S.label}>Note (optional)</label>
             <input style={S.input} placeholder={requesting.label && requesting.label.toLowerCase().includes("break") ? "e.g. I'd like to use this on Friday 4/11" : "Any details for your Team Lead..."} value={reqNote} onChange={e => setReqNote(e.target.value)} />
             <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-              <button style={{ flex: 2, background: "linear-gradient(135deg,#7c3aed,#a855f7)", color: "#fff", border: "none", borderRadius: 12, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.6 : 1 }} onClick={handleRequest} disabled={submitting}>{submitting ? "Sending..." : "Send Request 🚀"}</button>
+              <button style={{ flex: 2, background: "linear-gradient(135deg,#7c3aed,#a855f7)", color: "#fff", border: "none", borderRadius: 12, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.6 : 1 }} onClick={handleIndividualRequest} disabled={submitting}>{submitting ? "Sending..." : "Send Request 🚀"}</button>
               <button style={{ flex: 1, background: "#334155", color: "#94a3b8", border: "none", borderRadius: 12, padding: "14px 0", fontSize: 14, cursor: "pointer" }} onClick={() => { setRequesting(null); setReqNote(""); }}>Cancel</button>
             </div>
           </div>
         </div>
       )}
-      <div style={{ background: "linear-gradient(135deg,#4c1d95,#7c3aed)", borderRadius: 20, padding: "24px 20px", textAlign: "center", marginBottom: 20 }}>
+
+      {/* ── Team pledge sheet ── */}
+      {pledgingPrize && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 9000, display: "flex", alignItems: "flex-end" }}>
+          <div style={{ background: "#1e293b", borderRadius: "20px 20px 0 0", padding: 24, width: "100%", boxSizing: "border-box" }}>
+            <div style={{ color: "#f1f5f9", fontWeight: 800, fontSize: 18, marginBottom: 2 }}>💰 Pledge Points</div>
+            <div style={{ color: "#94a3b8", fontSize: 14, marginBottom: 16 }}>
+              {pledgingPrize.mystery ? "Mystery Prize" : pledgingPrize.label} · Goal: {pledgingPrize.cost} pts
+            </div>
+            <div style={{ background: "#0f172a", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", color: "#94a3b8", fontSize: 13 }}>
+                <span>Your total points</span><span style={{ color: "#f1f5f9", fontWeight: 700 }}>{myPoints}</span>
+              </div>
+              {myTotalPledged > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", color: "#94a3b8", fontSize: 13, marginTop: 4 }}>
+                  <span>Already pledged elsewhere</span><span style={{ color: "#f87171", fontWeight: 700 }}>−{myTotalPledged - (myPledge(pledgingPrize.id)?.amount || 0)}</span>
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", color: "#94a3b8", fontSize: 13, marginTop: 4, borderTop: "1px solid #1e293b", paddingTop: 4 }}>
+                <span>Available to pledge</span><span style={{ color: "#4ade80", fontWeight: 700 }}>{myAvailablePoints + (myPledge(pledgingPrize.id)?.amount || 0)}</span>
+              </div>
+            </div>
+            {myPledge(pledgingPrize.id) && (
+              <div style={{ color: "#60a5fa", fontSize: 13, marginBottom: 10 }}>
+                You already pledged <strong>{myPledge(pledgingPrize.id).amount} pts</strong>. Enter a new amount to update it.
+              </div>
+            )}
+            <label style={S.label}>How many points to pledge?</label>
+            <input style={S.input} type="number" placeholder="e.g. 10" value={pledgeAmount} onChange={e => { setPledgeAmount(e.target.value); setPledgeError(""); }} />
+            {pledgeError && <div style={S.errorMsg}>{pledgeError}</div>}
+            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+              <button style={{ flex: 2, background: "linear-gradient(135deg,#1e40af,#3b82f6)", color: "#fff", border: "none", borderRadius: 12, padding: "14px 0", fontSize: 15, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.6 : 1 }} onClick={handlePledge} disabled={submitting}>{submitting ? "Saving..." : myPledge(pledgingPrize.id) ? "Update Pledge 💰" : "Pledge Points 💰"}</button>
+              <button style={{ flex: 1, background: "#334155", color: "#94a3b8", border: "none", borderRadius: 12, padding: "14px 0", fontSize: 14, cursor: "pointer" }} onClick={() => { setPledgingPrize(null); setPledgeAmount(""); setPledgeError(""); }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Header ── */}
+      <div style={{ background: "linear-gradient(135deg,#4c1d95,#7c3aed)", borderRadius: 20, padding: "24px 20px", textAlign: "center", marginBottom: 16 }}>
         <div style={{ color: "#fff", fontWeight: 800, fontSize: 22 }}>🎁 Prize Shop</div>
         <div style={{ color: "#ddd6fe", fontSize: 13, marginTop: 4 }}>Spend your points or pool with the team!</div>
-        {currentUser && <div style={{ marginTop: 10, background: "rgba(255,255,255,0.15)", borderRadius: 20, padding: "4px 16px", display: "inline-block", color: "#fff", fontSize: 14, fontWeight: 600 }}>Your balance: {myPoints} pts</div>}
+        {currentUser && (
+          <div style={{ display: "flex", justifyContent: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+            <div style={{ background: "rgba(255,255,255,0.15)", borderRadius: 20, padding: "4px 14px", color: "#fff", fontSize: 13, fontWeight: 600 }}>Your balance: {myPoints} pts</div>
+            {myTotalPledged > 0 && <div style={{ background: "rgba(255,255,255,0.1)", borderRadius: 20, padding: "4px 14px", color: "#c4b5fd", fontSize: 13 }}>{myTotalPledged} pledged</div>}
+          </div>
+        )}
       </div>
+
       {success && <div style={{ background: "#065f46", color: "#d1fae5", borderRadius: 12, padding: "12px 16px", marginBottom: 16, fontSize: 14, fontWeight: 600 }}>{success}</div>}
-      {[{ title: "🙋 Individual Prizes", items: individual, bg: "#1e293b" }, { title: "👥 Team Prizes (Pool Points)", items: team, bg: "linear-gradient(135deg,#1e3a5f,#1e40af)" }].map(section => (
-        <div key={section.title} style={{ marginBottom: 20 }}>
-          <div style={S.sectionTitle}>{section.title}</div>
-          {section.items.length === 0 && <div style={{ color: "#64748b", fontSize: 13 }}>No prizes yet.</div>}
-          {section.items.map(p => (
-            <div key={p.id} style={{ background: section.bg, borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
+
+      {/* ── Tabs ── */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button style={{ ...S.tabBtn, ...(activeTab === "individual" ? S.tabBtnActive : {}) }} onClick={() => setActiveTab("individual")}>🙋 Individual</button>
+        <button style={{ ...S.tabBtn, ...(activeTab === "team" ? S.tabBtnActive : {}) }} onClick={() => setActiveTab("team")}>👥 Team Pool</button>
+      </div>
+
+      {/* ── Individual Prizes ── */}
+      {activeTab === "individual" && (
+        <>
+          {individual.length === 0 && <div style={S.emptyMsg}>No individual prizes yet.</div>}
+          {individual.map(p => (
+            <div key={p.id} style={{ background: "#1e293b", borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ color: "#f1f5f9", fontWeight: 600, fontSize: 15, flex: 1, filter: p.mystery ? "blur(5px)" : "none", userSelect: p.mystery ? "none" : "auto" }}>{p.mystery ? "Mystery Prize" : p.label}</span>
                 {p.mystery && <span style={{ color: "#fbbf24", fontSize: 13, marginRight: 8 }}>🎁</span>}
                 <span style={{ background: "#7c3aed", color: "#fff", borderRadius: 20, padding: "4px 14px", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{p.cost} pts</span>
               </div>
               {currentUser && (
-                <button
-                  style={{ width: "100%", marginTop: 10, background: myPoints >= p.cost ? "linear-gradient(135deg,#065f46,#10b981)" : "#1e293b", border: myPoints >= p.cost ? "none" : "1px solid #334155", color: myPoints >= p.cost ? "#d1fae5" : "#475569", borderRadius: 10, padding: "9px 0", fontSize: 13, fontWeight: 700, cursor: myPoints >= p.cost ? "pointer" : "default" }}
+                <button style={{ width: "100%", marginTop: 10, background: myPoints >= p.cost ? "linear-gradient(135deg,#065f46,#10b981)" : "#0f172a", border: myPoints >= p.cost ? "none" : "1px solid #334155", color: myPoints >= p.cost ? "#d1fae5" : "#475569", borderRadius: 10, padding: "9px 0", fontSize: 13, fontWeight: 700, cursor: myPoints >= p.cost ? "pointer" : "default" }}
                   onClick={() => myPoints >= p.cost && setRequesting(p)}>
                   {myPoints >= p.cost ? "🙋 Request Redemption" : `Need ${p.cost - myPoints} more pts`}
                 </button>
               )}
             </div>
           ))}
-        </div>
-      ))}
-      <div style={{ background: "#1e293b", borderRadius: 16, padding: 20 }}>
+        </>
+      )}
+
+      {/* ── Team Pool Prizes ── */}
+      {activeTab === "team" && (
+        <>
+          <div style={{ background: "linear-gradient(135deg,#0f2027,#1e3a5f)", border: "1px solid #3b82f6", borderRadius: 14, padding: "14px 16px", marginBottom: 16 }}>
+            <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 14, marginBottom: 6 }}>👥 How Team Prizes Work</div>
+            <div style={{ color: "#bfdbfe", fontSize: 13, lineHeight: 1.6 }}>
+              Pledge any amount of your own points toward a team prize. Your pledged points are locked toward that goal. When the goal is fully funded, the prize is ready to claim — your Team Lead will approve and the pledged points are automatically deducted.
+            </div>
+          </div>
+
+          {team.length === 0 && <div style={S.emptyMsg}>No team prizes set up yet.</div>}
+          {team.map(p => {
+            const pp = prizePledges(p.id);
+            const total = pledgeTotal(p.id);
+            const pct = Math.min(100, Math.round((total / p.cost) * 100));
+            const goalMet = total >= p.cost;
+            const myP = myPledge(p.id);
+            return (
+              <div key={p.id} style={{ background: "linear-gradient(135deg,#0f2027,#1e3a5f)", border: `1px solid ${goalMet ? "#10b981" : "#1e40af"}`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
+                {/* Prize header */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+                  <span style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 15, flex: 1, filter: p.mystery ? "blur(5px)" : "none", userSelect: p.mystery ? "none" : "auto" }}>{p.mystery ? "Mystery Prize" : p.label}</span>
+                  {p.mystery && <span style={{ color: "#fbbf24", marginRight: 8 }}>🎁</span>}
+                  <span style={{ background: goalMet ? "#10b981" : "#1e40af", color: "#fff", borderRadius: 20, padding: "4px 14px", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{p.cost} pts</span>
+                </div>
+
+                {/* Progress bar */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: "#94a3b8", fontSize: 12 }}>Pledges so far</span>
+                    <span style={{ color: goalMet ? "#4ade80" : "#60a5fa", fontSize: 12, fontWeight: 700 }}>{total} / {p.cost} pts ({pct}%)</span>
+                  </div>
+                  <div style={{ height: 10, background: "#0f172a", borderRadius: 5, overflow: "hidden" }}>
+                    <div style={{ height: "100%", borderRadius: 5, background: goalMet ? "linear-gradient(90deg,#10b981,#4ade80)" : "linear-gradient(90deg,#1e40af,#3b82f6)", width: `${pct}%`, transition: "width 0.6s ease" }} />
+                  </div>
+                  {goalMet
+                    ? <div style={{ color: "#4ade80", fontWeight: 700, fontSize: 13, textAlign: "center", marginTop: 6 }}>🎉 Goal reached! Ask your Team Lead to claim.</div>
+                    : <div style={{ color: "#64748b", fontSize: 12, textAlign: "center", marginTop: 4 }}>Need {p.cost - total} more pts in pledges</div>
+                  }
+                </div>
+
+                {/* Pledger breakdown */}
+                {pp.length > 0 && (
+                  <div style={{ background: "rgba(0,0,0,0.3)", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                    <div style={{ color: "#94a3b8", fontSize: 11, fontWeight: 700, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Who's pledged</div>
+                    {pp.map(pl => (
+                      <div key={pl.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <span style={{ color: pl.member === currentUser ? "#60a5fa" : "#cbd5e1", fontSize: 13, fontWeight: pl.member === currentUser ? 700 : 400 }}>
+                          {pl.member === currentUser ? "You" : pl.member}
+                        </span>
+                        <span style={{ color: "#4ade80", fontSize: 13, fontWeight: 700 }}>{pl.amount} pts</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Pledge / update / remove buttons */}
+                {currentUser && (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      style={{ flex: 1, background: "linear-gradient(135deg,#1e40af,#3b82f6)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: myAvailablePoints > 0 || myP ? "pointer" : "default", opacity: myAvailablePoints > 0 || myP ? 1 : 0.4 }}
+                      onClick={() => { if (myAvailablePoints > 0 || myP) { setPledgingPrize(p); setPledgeAmount(myP ? String(myP.amount) : ""); setPledgeError(""); } }}>
+                      {myP ? `✏️ Update (${myP.amount} pts)` : "💰 Pledge Points"}
+                    </button>
+                    {myP && (
+                      <button style={{ background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                        onClick={() => handleRemovePledge(p.id)}>✕ Remove</button>
+                    )}
+                  </div>
+                )}
+                {!currentUser && <div style={{ color: "#475569", fontSize: 13, textAlign: "center", marginTop: 8 }}>Join the team to pledge points</div>}
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      <div style={{ background: "#1e293b", borderRadius: 16, padding: 20, marginTop: 8 }}>
         <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 15, marginBottom: 8 }}>💡 How to Redeem</div>
-        <p style={{ color: "#cbd5e1", fontSize: 14, margin: 0, lineHeight: 1.7 }}>Tap "Request Redemption" on any prize you can afford. Your Team Lead will review and approve it. All redemptions are at Team Lead discretion — ask if you have questions!</p>
+        <p style={{ color: "#cbd5e1", fontSize: 14, margin: 0, lineHeight: 1.7 }}>Individual prizes use your own balance. For team prizes, pledge any amount — your pledged points are locked toward that goal. When fully funded, tell your Team Lead and they'll approve the deductions. All redemptions require Team Lead approval.</p>
       </div>
     </div>
   );
 }
 
-function AdminRedemptionRequests({ requests, loadAll, getPoints }) {
+function AdminRedemptionRequests({ requests, loadAll, getPoints, leaderboard, pledges }) {
   const pending = requests.filter(r => r.status === "pending");
   const reviewed = requests.filter(r => r.status !== "pending");
+  const totalTeamPoints = leaderboard ? leaderboard.reduce((s, m) => s + m.points, 0) : 0;
 
   const handleApprove = async (r) => {
     await sbUpdate("redemption_requests", { id: r.id }, { status: "approved", reviewed_at: new Date().toLocaleString() });
+    // For team prizes: auto-deduct each member's pledged amount and clear the pledges
+    if (r.is_team_prize && pledges) {
+      const prizePledges = pledges.filter(pl => pl.prize_label === r.prize_label);
+      await Promise.all(prizePledges.map(async pl => {
+        const uid = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+        await sbInsert("point_redemptions", { id: uid, member: pl.member, points: pl.amount, note: `Team prize: ${r.prize_label}`, redeemed_at: new Date().toLocaleString() });
+        await sbDelete("team_pledges", { id: pl.id });
+      }));
+    }
     await loadAll();
   };
   const handleDeny = async (r) => {
@@ -1089,23 +1293,46 @@ function AdminRedemptionRequests({ requests, loadAll, getPoints }) {
       <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 16 }}>Review prize redemption requests from your team.</div>
       {pending.length === 0 && <div style={S.emptyMsg}>No pending requests 🎉</div>}
       {pending.map(r => {
-        const available = getPoints ? getPoints(r.member) : 0;
+        const isTeam = r.is_team_prize;
+        const pledgeTotal = isTeam ? (pledges || []).filter(pl => pl.prize_label === r.prize_label).reduce((s, pl) => s + pl.amount, 0) : 0;
+        const available = isTeam ? pledgeTotal : (getPoints ? getPoints(r.member) : 0);
         const canAfford = available >= r.prize_cost;
         return (
-          <div key={r.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10, border: "1px solid #7c3aed" }}>
-            <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, marginBottom: 4 }}>🙋 REDEMPTION REQUEST</div>
-            <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 15 }}>{r.member}</div>
-            <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 4 }}>{r.prize_label}</div>
-            <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{r.prize_cost} pts · Requested {r.requested_at}</div>
-            <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 8, background: canAfford ? "#065f46" : "#7f1d1d", display: "inline-block" }}>
-              <span style={{ color: canAfford ? "#4ade80" : "#f87171", fontSize: 12, fontWeight: 700 }}>
-                {canAfford ? `✅ Has ${available} pts (can afford)` : `❌ Only has ${available} pts — cannot afford`}
-              </span>
+          <div key={r.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10, border: `1px solid ${isTeam ? "#3b82f6" : "#7c3aed"}` }}>
+            <div style={{ color: isTeam ? "#60a5fa" : "#a78bfa", fontSize: 11, fontWeight: 700, marginBottom: 4 }}>
+              {isTeam ? "👥 TEAM PRIZE REQUEST" : "🙋 INDIVIDUAL REQUEST"}
             </div>
+            <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 15 }}>{r.member} {isTeam ? "(on behalf of team)" : ""}</div>
+            <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 4 }}>{r.prize_label}</div>
+            <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{r.prize_cost} pts needed · Requested {r.requested_at}</div>
+
+            {isTeam ? (
+              <div style={{ marginTop: 8, background: canAfford ? "#065f46" : "#1e3a5f", borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ color: canAfford ? "#4ade80" : "#60a5fa", fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+                  {canAfford ? `✅ Fully pledged! ${pledgeTotal} / ${r.prize_cost} pts — ready to approve.` : `⏳ Pledged so far: ${pledgeTotal} / ${r.prize_cost} pts`}
+                </div>
+                {canAfford && <div style={{ color: "#86efac", fontSize: 12, marginBottom: 6 }}>Approving will automatically deduct each member's pledge.</div>}
+                {(pledges || []).filter(pl => pl.prize_label === r.prize_label).length > 0
+                  ? (pledges || []).filter(pl => pl.prize_label === r.prize_label).map(pl => (
+                      <div key={pl.id} style={{ display: "flex", justifyContent: "space-between", color: "#94a3b8", fontSize: 12, marginTop: 2 }}>
+                        <span>{pl.member}</span><span style={{ color: "#4ade80" }}>−{pl.amount} pts</span>
+                      </div>
+                    ))
+                  : <div style={{ color: "#475569", fontSize: 12 }}>No pledges yet.</div>
+                }
+              </div>
+            ) : (
+              <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 8, background: canAfford ? "#065f46" : "#7f1d1d", display: "inline-block" }}>
+                <span style={{ color: canAfford ? "#4ade80" : "#f87171", fontSize: 12, fontWeight: 700 }}>
+                  {canAfford ? `✅ Has ${available} pts (can afford)` : `❌ Only has ${available} pts — cannot afford`}
+                </span>
+              </div>
+            )}
+
             {r.note && <div style={{ background: "#0f172a", borderRadius: 8, padding: "8px 12px", marginTop: 8, color: "#94a3b8", fontSize: 13 }}>📝 {r.note}</div>}
-            {r.prize_label && r.prize_label.toLowerCase().includes("break") && (
+            {!isTeam && r.prize_label && r.prize_label.toLowerCase().includes("break") && (
               <div style={{ background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 12px", marginTop: 8 }}>
-                <div style={{ color: "#fbbf24", fontSize: 12, fontWeight: 700 }}>⏰ Break Request — verify the date above before approving</div>
+                <div style={{ color: "#fbbf24", fontSize: 12, fontWeight: 700 }}>⏰ Break Request — verify the day in the note before approving</div>
               </div>
             )}
             <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
@@ -1122,7 +1349,7 @@ function AdminRedemptionRequests({ requests, loadAll, getPoints }) {
             <div key={r.id} style={{ background: "#1e293b", borderRadius: 12, padding: "12px 16px", marginBottom: 8, opacity: 0.7 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
-                  <div style={{ color: "#f1f5f9", fontWeight: 600 }}>{r.member} — {r.prize_label}</div>
+                  <div style={{ color: "#f1f5f9", fontWeight: 600 }}>{r.is_team_prize ? "👥 " : ""}{r.member} — {r.prize_label}</div>
                   <div style={{ color: "#64748b", fontSize: 12 }}>{r.prize_cost} pts · {r.reviewed_at || r.requested_at}</div>
                   {r.note && <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>📝 {r.note}</div>}
                 </div>
@@ -1152,7 +1379,10 @@ function AdminLogin({ setIsAdmin, setScreen }) {
   );
 }
 
-function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteSubmission, leaderboard, bonuses, loadAll, prizes, announcement, members, deleteMember, questions, questionAnswers, expectations, redemptions, getPoints, getEarnedPoints, redemptionRequests }) {
+function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteSubmission, leaderboard, bonuses, loadAll, refresh, prizes, announcement, members, deleteMember, questions, questionAnswers, expectations, redemptions, getPoints, getEarnedPoints, redemptionRequests }) {
+  // refresh = doFetch from App — always forces a reload even if polling is mid-flight
+  // loadAll = guarded version used by polling; refresh used after any save/delete action
+  const r = refresh || loadAll; // fallback to loadAll if refresh not passed
   const pending = submissions.filter(s => s.status === "pending");
   const reviewed = submissions.filter(s => s.status !== "pending");
   const pendingQA = questionAnswers.filter(a => a.status === "pending");
@@ -1187,18 +1417,18 @@ function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteS
         <>
           {pending.length === 0 && pendingQA.length === 0 && <div style={S.emptyMsg}>No pending submissions 🎉</div>}
           {pending.map(s => <ReviewCard key={s.id} s={s} approve={approveSubmission} reject={rejectSubmission} onDelete={deleteSubmission} />)}
-          {pendingQA.map(a => <QAReviewCard key={a.id} a={a} questions={questions} loadAll={loadAll} />)}
+          {pendingQA.map(a => <QAReviewCard key={a.id} a={a} questions={questions} loadAll={r} />)}
         </>
       )}
       {tab === "reviewed" && (reviewed.length === 0 ? <div style={S.emptyMsg}>No reviewed submissions yet.</div> : reviewed.map(s => <ReviewCard key={s.id} s={s} readonly onDelete={deleteSubmission} />))}
-      {tab === "bonuses" && <AdminBonuses bonuses={bonuses} loadAll={loadAll} />}
-      {tab === "questions" && <AdminQuestions questions={questions} questionAnswers={questionAnswers} loadAll={loadAll} />}
-      {tab === "prizes" && <AdminPrizes prizes={prizes} loadAll={loadAll} />}
-      {tab === "announce" && <AdminAnnouncement announcement={announcement} loadAll={loadAll} />}
+      {tab === "bonuses" && <AdminBonuses bonuses={bonuses} loadAll={r} />}
+      {tab === "questions" && <AdminQuestions questions={questions} questionAnswers={questionAnswers} loadAll={r} />}
+      {tab === "prizes" && <AdminPrizes prizes={prizes} loadAll={r} />}
+      {tab === "announce" && <AdminAnnouncement announcement={announcement} loadAll={r} />}
       {tab === "members" && <AdminMembers members={members} leaderboard={leaderboard} deleteMember={deleteMember} submissions={submissions} questionAnswers={questionAnswers} />}
-      {tab === "cashout" && <AdminCashOut leaderboard={leaderboard} redemptions={redemptions} loadAll={loadAll} getPoints={getPoints} getEarnedPoints={getEarnedPoints} />}
-      {tab === "requests" && <AdminRedemptionRequests requests={redemptionRequests || []} loadAll={loadAll} getPoints={getPoints} />}
-      {tab === "expectations" && <AdminExpectations expectations={expectations} loadAll={loadAll} />}
+      {tab === "cashout" && <AdminCashOut leaderboard={leaderboard} redemptions={redemptions} loadAll={r} getPoints={getPoints} getEarnedPoints={getEarnedPoints} />}
+      {tab === "requests" && <AdminRedemptionRequests requests={redemptionRequests || []} loadAll={r} getPoints={getPoints} leaderboard={leaderboard} pledges={pledges || []} />}
+      {tab === "expectations" && <AdminExpectations expectations={expectations} loadAll={r} />}
       {tab === "board" && leaderboard.map((m, i) => (
         <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 14, background: "#1e293b", borderRadius: 12, padding: "14px 16px", marginBottom: 8 }}>
           <span style={{ fontSize: 20 }}>{["🥇","🥈","🥉"][i] || `#${i+1}`}</span>
@@ -1331,7 +1561,7 @@ function AdminExpectations({ expectations, loadAll }) {
     setSaving(true);
     const data = { title: form.title, description: form.description, imgs: form.photos, img: form.photos[0]?.img || null };
     if (editId) { await sbUpdate("expectations", { id: editId }, data); }
-    else { await sbInsert("expectations", { id: Date.now(), ...data }); }
+    else { await sbInsert("expectations", { id: Date.now() * 1000 + Math.floor(Math.random() * 1000), ...data }); }
     await loadAll(); setShowForm(false); resetForm(); setSaving(false);
   };
 
@@ -1447,11 +1677,14 @@ function AdminPrizes({ prizes, loadAll }) {
   const handleSave = async () => {
     if (!form.label.trim()) { setError("Add a prize name."); return; }
     if (!form.cost || isNaN(form.cost) || parseInt(form.cost) <= 0) { setError("Enter valid points."); return; }
-    setSaving(true);
-    const data = { label: form.label, cost: parseInt(form.cost), individual: form.individual, mystery: form.mystery, active: true };
-    if (editId) { await sbUpdate("prizes", { id: editId }, data); }
-    else { await sbInsert("prizes", { id: Date.now(), ...data }); }
-    await loadAll(); setShowForm(false); resetForm(); setSaving(false);
+    setSaving(true); setError("");
+    try {
+      const data = { label: form.label, cost: parseInt(form.cost), individual: form.individual, mystery: form.mystery, active: true };
+      if (editId) { await sbUpdate("prizes", { id: editId }, data); }
+      else { const r = await sbInsert("prizes", { id: Date.now() * 1000 + Math.floor(Math.random() * 1000), ...data }); if (r && r.error) { setError("Save failed — try again."); setSaving(false); return; } }
+      await loadAll(); setShowForm(false); resetForm();
+    } catch { setError("Save failed — check connection."); }
+    setSaving(false);
   };
 
   return (
@@ -1553,7 +1786,7 @@ function AdminQuestions({ questions, questionAnswers, loadAll }) {
     const opts = form.type === "multiple_choice" ? form.options.filter(o => o.trim()) : null;
     const data = { question: form.question, type: form.type, options: opts, correct_answer: form.correctAnswer || null, points: parseInt(form.points), active: form.active };
     if (editId) { await sbUpdate("questions", { id: editId }, data); }
-    else { await sbInsert("questions", { id: Date.now(), ...data }); }
+    else { await sbInsert("questions", { id: Date.now() * 1000 + Math.floor(Math.random() * 1000), ...data }); }
     await loadAll(); setShowForm(false); resetForm(); setSaving(false);
   };
 
@@ -1659,10 +1892,23 @@ function AdminBonuses({ bonuses, loadAll }) {
     if (!form.startTime || !form.endTime) { setError("Set start and end times."); return; }
     if (new Date(form.endTime) <= new Date(form.startTime)) { setError("End time must be after start time."); return; }
     setSaving(true);
-    const data = { label: form.label, description: form.description, points: parseInt(form.points), icon: form.icon, start_time: form.startTime, end_time: form.endTime, active: form.active, photo: form.photo || null };
-    if (editId) { await sbUpdate("bonuses", { id: editId }, data); }
-    else { await sbInsert("bonuses", { id: Date.now(), ...data, claimed_by: null }); }
-    await loadAll(); setShowForm(false); resetForm(); setSaving(false);
+    setError("");
+    try {
+      const data = { label: form.label, description: form.description, points: parseInt(form.points), icon: form.icon, start_time: form.startTime, end_time: form.endTime, active: form.active, photo: form.photo || null };
+      if (editId) {
+        const ok = await sbUpdate("bonuses", { id: editId }, data);
+        if (!ok) { setError("Save failed — please try again."); setSaving(false); return; }
+      } else {
+        const result = await sbInsert("bonuses", { id: Date.now() * 1000 + Math.floor(Math.random() * 1000), ...data, claimed_by: null });
+        if (result && result.error) { setError("Save failed: " + (result.error.message || "please try again.")); setSaving(false); return; }
+      }
+      await loadAll();
+      setShowForm(false);
+      resetForm();
+    } catch (err) {
+      setError("Save failed — check your connection.");
+    }
+    setSaving(false);
   };
 
   const nowT = new Date();
