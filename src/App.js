@@ -324,7 +324,7 @@ export default function App() {
           {screen === "prizes" && <PrizesScreen prizes={prizes} currentUser={currentUser} getPoints={getPoints} loadAll={loadAll} leaderboard={leaderboard} pledges={pledges} />}
           {(screen === "bonuses" || screen === "bonuses_tab_bonuses" || screen === "bonuses_tab_questions") && <BonusesScreen bonuses={bonuses} activeBonuses={activeBonuses} questions={activeQuestions} currentUser={currentUser} questionAnswers={questionAnswers} loadAll={loadAll} setScreen={setScreen} setPendingBonusId={setPendingBonusId} initialTab={screen === "bonuses_tab_questions" ? "questions" : "bonuses"} />}
           {screen === "expectations" && <ExpectationsScreen expectations={expectations} />}
-          {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} refresh={doFetch} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} redemptionRequests={redemptionRequests} />}
+          {screen === "admin" && isAdmin && <AdminScreen submissions={submissions} approveSubmission={approveSubmission} rejectSubmission={rejectSubmission} deleteSubmission={deleteSubmission} leaderboard={leaderboard} bonuses={bonuses} loadAll={loadAll} refresh={doFetch} prizes={prizes} announcement={announcement} members={members} deleteMember={deleteMember} questions={questions} questionAnswers={questionAnswers} expectations={expectations} redemptions={redemptions} getPoints={getPoints} getEarnedPoints={getEarnedPoints} redemptionRequests={redemptionRequests} pledges={pledges} />}
           {screen === "adminlogin" && <AdminLogin setIsAdmin={setIsAdmin} setScreen={setScreen} />}
         </div>
         <BottomNav screen={screen} setScreen={setScreen} isAdmin={isAdmin} activeBonuses={activeBonuses} activeQuestions={activeQuestions} pendingCount={pendingCount} />
@@ -1448,7 +1448,7 @@ function AdminLogin({ setIsAdmin, setScreen }) {
   );
 }
 
-function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteSubmission, leaderboard, bonuses, loadAll, refresh, prizes, announcement, members, deleteMember, questions, questionAnswers, expectations, redemptions, getPoints, getEarnedPoints, redemptionRequests }) {
+function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteSubmission, leaderboard, bonuses, loadAll, refresh, prizes, announcement, members, deleteMember, questions, questionAnswers, expectations, redemptions, getPoints, getEarnedPoints, redemptionRequests, pledges }) {
   // refresh = doFetch from App — always forces a reload even if polling is mid-flight
   // loadAll = guarded version used by polling; refresh used after any save/delete action
   const r = refresh || loadAll; // fallback to loadAll if refresh not passed
