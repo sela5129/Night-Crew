@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 const SUPABASE_URL = "https://nmpbvjpvolhtxrultmvj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_iZs30OH1g7IVnI0MvhUMPw_dwUVgBrS";
@@ -122,6 +122,34 @@ function getTimeLeft(endTime) {
 
 function todayStr() { return new Date().toISOString().split("T")[0]; }
 
+// Top-level error boundary — catches any unhandled render crash and shows a message
+class AppErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { crashed: false, error: null }; }
+  static getDerivedStateFromError(error) { return { crashed: true, error }; }
+  componentDidCatch(error, info) { console.error("App crashed:", error, info); }
+  render() {
+    if (this.state.crashed) {
+      return (
+        <div style={{ background: "#0f172a", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 32 }}>
+          <div style={{ textAlign: "center", maxWidth: 340 }}>
+            <div style={{ fontSize: 56, marginBottom: 16 }}>🌙</div>
+            <div style={{ color: "#f87171", fontWeight: 800, fontSize: 20, marginBottom: 8 }}>Something went wrong</div>
+            <div style={{ color: "#64748b", fontSize: 14, marginBottom: 8, lineHeight: 1.6 }}>
+              {this.state.error?.message || "An unexpected error occurred."}
+            </div>
+            <div style={{ color: "#475569", fontSize: 12, marginBottom: 24 }}>Try refreshing — your data is safe.</div>
+            <button onClick={() => window.location.reload()}
+              style={{ background: "linear-gradient(135deg,#1d4ed8,#7c3aed)", color: "#fff", border: "none", borderRadius: 12, padding: "14px 28px", fontSize: 16, fontWeight: 700, cursor: "pointer" }}>
+              🔄 Reload App
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [screen, setScreen] = useState("home");
   const [members, setMembers] = useState([]);
@@ -171,7 +199,8 @@ export default function App() {
   const doFetch = async () => {
     isFetching.current = true;
     try {
-      const [m, s, b, p, rd, a, q, qa, ex, ds, asgn, fb, rr, pl] = await Promise.all([
+      // Core tables — these must succeed for the app to work
+      const [m, s, b, p, rd, a, q, qa, ex] = await Promise.all([
         sbGet("members", "select=name&order=created_at.asc"),
         sbGet("submissions", "select=id,member,challenge_label,points,bonus_id,note,status,date,submission_type,description,suggested_points,reject_reason,created_at&order=created_at.desc"),
         sbGet("bonuses", "select=*&order=id.desc"),
@@ -181,12 +210,19 @@ export default function App() {
         sbGet("questions", "select=*&order=created_at.desc"),
         sbGet("question_answers", "select=*&order=created_at.desc"),
         sbGet("expectations", "select=id,title,description,imgs,img,created_at&order=created_at.desc"),
+      ]);
+
+      // Optional/newer tables — fetched with allSettled so a missing table never crashes the app
+      const optResults = await Promise.allSettled([
         sbGet("daily_standards", "select=*&order=id.asc"),
         sbGet("assignments", "select=*&order=created_at.desc"),
         sbGet("feedback", "select=*&order=created_at.desc"),
         sbGet("redemption_requests", "select=*&order=created_at.desc"),
         sbGet("team_pledges", "select=*&order=pledged_at.desc"),
       ]);
+      const safeVal = (result) => (result.status === "fulfilled" && Array.isArray(result.value)) ? result.value : [];
+      const [ds, asgn, fb, rr, pl] = optResults.map(safeVal);
+
       const newSubs = Array.isArray(s) ? s : [];
       const newPending = newSubs.filter(x => x.status === "pending").length;
       if (newPending > prevPendingCount.current && prevPendingCount.current >= 0 && !loading) {
@@ -203,11 +239,11 @@ export default function App() {
       setQuestionAnswers(Array.isArray(qa) ? qa : []);
       setExpectations(Array.isArray(ex) ? ex : []);
       setRedemptions(Array.isArray(rd) ? rd : []);
-      setDailyStandards(Array.isArray(ds) ? ds : []);
-      setAssignments(Array.isArray(asgn) ? asgn : []);
-      setFeedback(Array.isArray(fb) ? fb : []);
-      setRedemptionRequests(Array.isArray(rr) ? rr : []);
-      setPledges(Array.isArray(pl) ? pl : []);
+      setDailyStandards(ds);
+      setAssignments(asgn);
+      setFeedback(fb);
+      setRedemptionRequests(rr);
+      setPledges(pl);
     } catch (err) {
       console.error("fetch failed:", err);
     } finally {
@@ -274,6 +310,7 @@ export default function App() {
   );
 
   return (
+    <AppErrorBoundary>
     <div style={S.root}>
       <div style={S.app}>
         <Header screen={screen} setScreen={setScreen} currentUser={currentUser} isAdmin={isAdmin} setIsAdmin={setIsAdmin} pendingCount={pendingCount} newSubmissionAlert={newSubmissionAlert} />
@@ -293,6 +330,7 @@ export default function App() {
         <BottomNav screen={screen} setScreen={setScreen} isAdmin={isAdmin} activeBonuses={activeBonuses} activeQuestions={activeQuestions} pendingCount={pendingCount} />
       </div>
     </div>
+    </AppErrorBoundary>
   );
 }
 
