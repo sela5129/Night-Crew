@@ -1002,80 +1002,99 @@ function PrizesScreen({ prizes, currentUser, getPoints, loadAll, leaderboard, pl
 
   const myPoints = currentUser && getPoints ? getPoints(currentUser) : 0;
 
-  // Get pledges for a specific prize
-  const prizePledges = (prizeId) => (pledges || []).filter(pl => pl.prize_id === prizeId);
-  const pledgeTotal = (prizeId) => prizePledges(prizeId).reduce((s, pl) => s + pl.amount, 0);
-  const myPledge = (prizeId) => (pledges || []).find(pl => pl.prize_id === prizeId && pl.member === currentUser);
+  // Coerce IDs to strings for safe comparison — Supabase can return numbers or strings
+  const prizePledges = (prizeId) => (pledges || []).filter(pl => String(pl.prize_id) === String(prizeId));
+  const pledgeTotal = (prizeId) => prizePledges(prizeId).reduce((s, pl) => s + (Number(pl.amount) || 0), 0);
+  const myPledge = (prizeId) => (pledges || []).find(pl => String(pl.prize_id) === String(prizeId) && pl.member === currentUser);
 
   // Points already committed to pledges (can't double-spend)
   const myTotalPledged = (pledges || [])
     .filter(pl => pl.member === currentUser)
-    .reduce((s, pl) => s + pl.amount, 0);
-  const myAvailablePoints = myPoints - myTotalPledged;
+    .reduce((s, pl) => s + (Number(pl.amount) || 0), 0);
+  const myAvailablePoints = Math.max(0, myPoints - myTotalPledged);
 
   const handleIndividualRequest = async () => {
     if (!requesting || !currentUser) return;
     setSubmitting(true);
-    await sbInsert("redemption_requests", {
-      id: Date.now() * 1000 + Math.floor(Math.random() * 1000),
-      member: currentUser,
-      prize_label: requesting.mystery ? "Mystery Prize" : requesting.label,
-      prize_cost: requesting.cost,
-      note: reqNote.trim() || null,
-      status: "pending",
-      is_team_prize: false,
-      requested_at: new Date().toLocaleString()
-    });
-    await loadAll();
-    setSuccess(`✅ Request sent for "${requesting.mystery ? "Mystery Prize" : requesting.label}"! Your Team Lead will review it.`);
-    setRequesting(null); setReqNote(""); setSubmitting(false);
-    setTimeout(() => setSuccess(""), 5000);
+    try {
+      await sbInsert("redemption_requests", {
+        id: Date.now() * 1000 + Math.floor(Math.random() * 1000),
+        member: currentUser,
+        prize_label: requesting.mystery ? "Mystery Prize" : requesting.label,
+        prize_cost: requesting.cost,
+        note: reqNote.trim() || null,
+        status: "pending",
+        is_team_prize: false,
+        requested_at: new Date().toLocaleString()
+      });
+      await loadAll();
+      setSuccess(`✅ Request sent for "${requesting.mystery ? "Mystery Prize" : requesting.label}"! Your Team Lead will review it.`);
+      setRequesting(null); setReqNote("");
+      setTimeout(() => setSuccess(""), 5000);
+    } catch (err) {
+      setSuccess("❌ Request failed — please try again.");
+    }
+    setSubmitting(false);
   };
 
   const handlePledge = async () => {
+    if (!pledgingPrize) return;
     const amt = parseInt(pledgeAmount);
     if (!amt || amt <= 0) { setPledgeError("Enter a valid amount."); return; }
     const existing = myPledge(pledgingPrize.id);
-    const currentPledged = existing ? existing.amount : 0;
-    const diff = amt - currentPledged; // how much more we need to lock up
-    if (diff > myAvailablePoints) {
-      setPledgeError(`You only have ${myAvailablePoints} pts available (${myTotalPledged > 0 ? `${myTotalPledged} already pledged elsewhere` : "after current pledges"}).`);
+    const currentPledged = existing ? (Number(existing.amount) || 0) : 0;
+    // Available = myPoints minus all pledges EXCEPT what I already have on this prize
+    const availableForThis = myPoints - myTotalPledged + currentPledged;
+    if (amt > availableForThis) {
+      setPledgeError(`You only have ${availableForThis} pts available for this pledge.`);
       return;
     }
     if (amt > myPoints) { setPledgeError(`You only have ${myPoints} pts total.`); return; }
     setSubmitting(true);
-    if (existing) {
-      await sbUpdate("team_pledges", { id: existing.id }, { amount: amt });
-    } else {
-      await sbInsert("team_pledges", {
-        id: Date.now() * 1000 + Math.floor(Math.random() * 1000),
-        prize_id: pledgingPrize.id,
-        prize_label: pledgingPrize.mystery ? "Mystery Prize" : pledgingPrize.label,
-        member: currentUser,
-        amount: amt,
-        pledged_at: new Date().toLocaleString()
-      });
+    setPledgeError("");
+    try {
+      if (existing) {
+        await sbUpdate("team_pledges", { id: existing.id }, { amount: amt });
+      } else {
+        await sbInsert("team_pledges", {
+          id: Date.now() * 1000 + Math.floor(Math.random() * 1000),
+          prize_id: pledgingPrize.id,
+          prize_label: pledgingPrize.mystery ? "Mystery Prize" : pledgingPrize.label,
+          member: currentUser,
+          amount: amt,
+          pledged_at: new Date().toLocaleString()
+        });
+      }
+      await loadAll();
+      const newTotal = pledgeTotal(pledgingPrize.id) - currentPledged + amt;
+      const goal = pledgingPrize.cost;
+      setSuccess(newTotal >= goal
+        ? `🎉 Goal reached! The team has pledged ${newTotal} / ${goal} pts. Ask your Team Lead to claim it!`
+        : `✅ Pledged ${amt} pts toward ${pledgingPrize.mystery ? "Mystery Prize" : pledgingPrize.label}!`
+      );
+      setPledgingPrize(null); setPledgeAmount("");
+      setTimeout(() => setSuccess(""), 6000);
+    } catch (err) {
+      setPledgeError("Save failed — check your connection and try again.");
     }
-    await loadAll();
-    const total = pledgeTotal(pledgingPrize.id) - currentPledged + amt;
-    const goal = pledgingPrize.cost;
-    setSuccess(total >= goal
-      ? `🎉 Goal reached! The team has pledged ${total} / ${goal} pts. Ask your Team Lead to claim it!`
-      : `✅ Pledged ${amt} pts toward ${pledgingPrize.mystery ? "Mystery Prize" : pledgingPrize.label}!`
-    );
-    setPledgingPrize(null); setPledgeAmount(""); setPledgeError(""); setSubmitting(false);
-    setTimeout(() => setSuccess(""), 6000);
+    setSubmitting(false);
   };
 
   const handleRemovePledge = async (prizeId) => {
     const existing = myPledge(prizeId);
     if (!existing) return;
-    await sbDelete("team_pledges", { id: existing.id });
-    await loadAll();
-    setSuccess("Pledge removed.");
-    setTimeout(() => setSuccess(""), 3000);
+    try {
+      await sbDelete("team_pledges", { id: existing.id });
+      await loadAll();
+      setSuccess("Pledge removed.");
+      setTimeout(() => setSuccess(""), 3000);
+    } catch (err) {
+      setSuccess("❌ Remove failed — try again.");
+    }
   };
 
+  // Catch any render error and show a friendly message instead of white screen
+  try {
   return (
     <div style={{ padding: 16 }}>
 
@@ -1194,8 +1213,9 @@ function PrizesScreen({ prizes, currentUser, getPoints, loadAll, leaderboard, pl
           {team.map(p => {
             const pp = prizePledges(p.id);
             const total = pledgeTotal(p.id);
-            const pct = Math.min(100, Math.round((total / p.cost) * 100));
-            const goalMet = total >= p.cost;
+            const cost = Number(p.cost) || 1; // guard against 0/null cost causing NaN
+            const pct = Math.min(100, Math.round((total / cost) * 100));
+            const goalMet = total >= cost;
             const myP = myPledge(p.id);
             return (
               <div key={p.id} style={{ background: "linear-gradient(135deg,#0f2027,#1e3a5f)", border: `1px solid ${goalMet ? "#10b981" : "#1e40af"}`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
@@ -1210,14 +1230,14 @@ function PrizesScreen({ prizes, currentUser, getPoints, loadAll, leaderboard, pl
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
                     <span style={{ color: "#94a3b8", fontSize: 12 }}>Pledges so far</span>
-                    <span style={{ color: goalMet ? "#4ade80" : "#60a5fa", fontSize: 12, fontWeight: 700 }}>{total} / {p.cost} pts ({pct}%)</span>
+                    <span style={{ color: goalMet ? "#4ade80" : "#60a5fa", fontSize: 12, fontWeight: 700 }}>{total} / {cost} pts ({pct}%)</span>
                   </div>
                   <div style={{ height: 10, background: "#0f172a", borderRadius: 5, overflow: "hidden" }}>
                     <div style={{ height: "100%", borderRadius: 5, background: goalMet ? "linear-gradient(90deg,#10b981,#4ade80)" : "linear-gradient(90deg,#1e40af,#3b82f6)", width: `${pct}%`, transition: "width 0.6s ease" }} />
                   </div>
                   {goalMet
                     ? <div style={{ color: "#4ade80", fontWeight: 700, fontSize: 13, textAlign: "center", marginTop: 6 }}>🎉 Goal reached! Ask your Team Lead to claim.</div>
-                    : <div style={{ color: "#64748b", fontSize: 12, textAlign: "center", marginTop: 4 }}>Need {p.cost - total} more pts in pledges</div>
+                    : <div style={{ color: "#64748b", fontSize: 12, textAlign: "center", marginTop: 4 }}>Need {Math.max(0, cost - total)} more pts in pledges</div>
                   }
                 </div>
 
@@ -1240,7 +1260,7 @@ function PrizesScreen({ prizes, currentUser, getPoints, loadAll, leaderboard, pl
                 {currentUser && (
                   <div style={{ display: "flex", gap: 8 }}>
                     <button
-                      style={{ flex: 1, background: "linear-gradient(135deg,#1e40af,#3b82f6)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: myAvailablePoints > 0 || myP ? "pointer" : "default", opacity: myAvailablePoints > 0 || myP ? 1 : 0.4 }}
+                      style={{ flex: 1, background: "linear-gradient(135deg,#1e40af,#3b82f6)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: (myAvailablePoints > 0 || myP) ? "pointer" : "default", opacity: (myAvailablePoints > 0 || myP) ? 1 : 0.4 }}
                       onClick={() => { if (myAvailablePoints > 0 || myP) { setPledgingPrize(p); setPledgeAmount(myP ? String(myP.amount) : ""); setPledgeError(""); } }}>
                       {myP ? `✏️ Update (${myP.amount} pts)` : "💰 Pledge Points"}
                     </button>
@@ -1263,6 +1283,17 @@ function PrizesScreen({ prizes, currentUser, getPoints, loadAll, leaderboard, pl
       </div>
     </div>
   );
+  } catch (err) {
+    console.error("PrizesScreen render error:", err);
+    return (
+      <div style={{ padding: 32, textAlign: "center" }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
+        <div style={{ color: "#f87171", fontWeight: 700, fontSize: 18, marginBottom: 8 }}>Something went wrong</div>
+        <div style={{ color: "#94a3b8", fontSize: 14, marginBottom: 24 }}>The prizes page hit an error. Pull to refresh or tap below.</div>
+        <button onClick={() => window.location.reload()} style={{ background: "#1d4ed8", color: "#fff", border: "none", borderRadius: 12, padding: "12px 24px", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>🔄 Reload App</button>
+      </div>
+    );
+  }
 }
 
 function AdminRedemptionRequests({ requests, loadAll, getPoints, leaderboard, pledges }) {
