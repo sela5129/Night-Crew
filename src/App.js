@@ -1334,83 +1334,169 @@ function PrizesScreen({ prizes, currentUser, getPoints, loadAll, leaderboard, pl
   }
 }
 
-function AdminRedemptionRequests({ requests, loadAll, getPoints, leaderboard, pledges }) {
+function AdminRedemptionRequests({ requests, loadAll, getPoints, leaderboard, pledges, prizes }) {
   const pending = requests.filter(r => r.status === "pending");
   const reviewed = requests.filter(r => r.status !== "pending");
-  const totalTeamPoints = leaderboard ? leaderboard.reduce((s, m) => s + m.points, 0) : 0;
 
-  const handleApprove = async (r) => {
-    await sbUpdate("redemption_requests", { id: r.id }, { status: "approved", reviewed_at: new Date().toLocaleString() });
-    // For team prizes: auto-deduct each member's pledged amount and clear the pledges
-    if (r.is_team_prize && pledges) {
-      const prizePledges = pledges.filter(pl => pl.prize_label === r.prize_label);
-      await Promise.all(prizePledges.map(async pl => {
-        const uid = Date.now() * 1000 + Math.floor(Math.random() * 1000);
-        await sbInsert("point_redemptions", { id: uid, member: pl.member, points: pl.amount, note: `Team prize: ${r.prize_label}`, redeemed_at: new Date().toLocaleString() });
+  // Group pledges by prize_label to find fully-funded team prizes
+  const pledgesByPrize = {};
+  (pledges || []).forEach(pl => {
+    const key = pl.prize_label || "Unknown";
+    if (!pledgesByPrize[key]) pledgesByPrize[key] = [];
+    pledgesByPrize[key].push(pl);
+  });
+
+  // Find team prizes that are fully funded by pledges but have no pending request yet
+  const teamPrizes = (prizes || []).filter(p => !p.individual && p.active);
+  const fundedWithNoPendingRequest = teamPrizes.filter(p => {
+    const label = p.mystery ? "Mystery Prize" : p.label;
+    const total = (pledgesByPrize[label] || []).reduce((s, pl) => s + (Number(pl.amount) || 0), 0);
+    const alreadyRequested = pending.some(r => r.is_team_prize && r.prize_label === label);
+    return total >= (Number(p.cost) || 0) && !alreadyRequested && total > 0;
+  });
+
+  // Approve a pledge-funded prize directly (no redemption_request record needed)
+  const handleApprovePledges = async (prizeLabel, prizeGroupPledges) => {
+    try {
+      await Promise.all(prizeGroupPledges.map(async (pl, i) => {
+        const uid = Date.now() * 1000 + i + Math.floor(Math.random() * 100);
+        await sbInsert("point_redemptions", {
+          id: uid,
+          member: pl.member,
+          points: Number(pl.amount) || 0,
+          note: `Team prize: ${prizeLabel}`,
+          redeemed_at: new Date().toLocaleString()
+        });
         await sbDelete("team_pledges", { id: pl.id });
       }));
+      await loadAll();
+    } catch (err) {
+      console.error("Approve pledges failed:", err);
     }
-    await loadAll();
   };
+
+  const handleApprove = async (r) => {
+    try {
+      await sbUpdate("redemption_requests", { id: r.id }, { status: "approved", reviewed_at: new Date().toLocaleString() });
+      if (r.is_team_prize && pledges) {
+        const prizePledges = (pledges || []).filter(pl => pl.prize_label === r.prize_label);
+        await Promise.all(prizePledges.map(async (pl, i) => {
+          const uid = Date.now() * 1000 + i + Math.floor(Math.random() * 100);
+          await sbInsert("point_redemptions", { id: uid, member: pl.member, points: Number(pl.amount) || 0, note: `Team prize: ${r.prize_label}`, redeemed_at: new Date().toLocaleString() });
+          await sbDelete("team_pledges", { id: pl.id });
+        }));
+      }
+      await loadAll();
+    } catch (err) { console.error("Approve failed:", err); }
+  };
+
   const handleDeny = async (r) => {
-    await sbUpdate("redemption_requests", { id: r.id }, { status: "denied", reviewed_at: new Date().toLocaleString() });
-    await loadAll();
+    try {
+      await sbUpdate("redemption_requests", { id: r.id }, { status: "denied", reviewed_at: new Date().toLocaleString() });
+      await loadAll();
+    } catch (err) { console.error("Deny failed:", err); }
   };
+
+  const hasAnything = pending.length > 0 || fundedWithNoPendingRequest.length > 0;
 
   return (
     <div>
-      <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 16 }}>Review prize redemption requests from your team.</div>
-      {pending.length === 0 && <div style={S.emptyMsg}>No pending requests 🎉</div>}
-      {pending.map(r => {
-        const isTeam = r.is_team_prize;
-        const pledgeTotal = isTeam ? (pledges || []).filter(pl => pl.prize_label === r.prize_label).reduce((s, pl) => s + pl.amount, 0) : 0;
-        const available = isTeam ? pledgeTotal : (getPoints ? getPoints(r.member) : 0);
-        const canAfford = available >= r.prize_cost;
-        return (
-          <div key={r.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10, border: `1px solid ${isTeam ? "#3b82f6" : "#7c3aed"}` }}>
-            <div style={{ color: isTeam ? "#60a5fa" : "#a78bfa", fontSize: 11, fontWeight: 700, marginBottom: 4 }}>
-              {isTeam ? "👥 TEAM PRIZE REQUEST" : "🙋 INDIVIDUAL REQUEST"}
-            </div>
-            <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 15 }}>{r.member} {isTeam ? "(on behalf of team)" : ""}</div>
-            <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 4 }}>{r.prize_label}</div>
-            <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{r.prize_cost} pts needed · Requested {r.requested_at}</div>
+      <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 16 }}>
+        Review individual prize requests and team pledge pools ready to claim.
+      </div>
 
-            {isTeam ? (
-              <div style={{ marginTop: 8, background: canAfford ? "#065f46" : "#1e3a5f", borderRadius: 8, padding: "10px 12px" }}>
-                <div style={{ color: canAfford ? "#4ade80" : "#60a5fa", fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
-                  {canAfford ? `✅ Fully pledged! ${pledgeTotal} / ${r.prize_cost} pts — ready to approve.` : `⏳ Pledged so far: ${pledgeTotal} / ${r.prize_cost} pts`}
+      {/* ── Funded team prizes with no formal request yet ── */}
+      {fundedWithNoPendingRequest.length > 0 && (
+        <>
+          <div style={{ color: "#4ade80", fontWeight: 700, fontSize: 13, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+            🎉 Team prizes ready to approve
+          </div>
+          {fundedWithNoPendingRequest.map(p => {
+            const label = p.mystery ? "Mystery Prize" : p.label;
+            const group = pledgesByPrize[label] || [];
+            const total = group.reduce((s, pl) => s + (Number(pl.amount) || 0), 0);
+            return (
+              <div key={p.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 12, border: "1px solid #10b981" }}>
+                <div style={{ color: "#4ade80", fontSize: 11, fontWeight: 700, marginBottom: 4 }}>👥 TEAM PRIZE — FULLY FUNDED</div>
+                <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 16, marginBottom: 2 }}>{label}</div>
+                <div style={{ color: "#64748b", fontSize: 12, marginBottom: 10 }}>Goal: {p.cost} pts · Pledged: {total} pts</div>
+                <div style={{ background: "#065f46", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+                  <div style={{ color: "#4ade80", fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+                    ✅ Fully funded — approving will deduct from each member automatically
+                  </div>
+                  {group.map(pl => (
+                    <div key={pl.id} style={{ display: "flex", justifyContent: "space-between", color: "#86efac", fontSize: 13, marginTop: 4 }}>
+                      <span style={{ fontWeight: 600 }}>{pl.member}</span>
+                      <span>−{pl.amount} pts</span>
+                    </div>
+                  ))}
                 </div>
-                {canAfford && <div style={{ color: "#86efac", fontSize: 12, marginBottom: 6 }}>Approving will automatically deduct each member's pledge.</div>}
-                {(pledges || []).filter(pl => pl.prize_label === r.prize_label).length > 0
-                  ? (pledges || []).filter(pl => pl.prize_label === r.prize_label).map(pl => (
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button style={{ flex: 1, background: "linear-gradient(135deg,#065f46,#10b981)", color: "#d1fae5", border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14, fontWeight: 700, cursor: "pointer" }}
+                    onClick={() => handleApprovePledges(label, group)}>
+                    ✅ Approve & Deduct Points
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* ── Formal pending requests ── */}
+      {pending.length > 0 && (
+        <>
+          {fundedWithNoPendingRequest.length > 0 && <div style={{ ...S.sectionTitle, marginTop: 8 }}>Other Pending Requests</div>}
+          {pending.map(r => {
+            const isTeam = r.is_team_prize;
+            const pledgeTotal = isTeam ? (pledges || []).filter(pl => pl.prize_label === r.prize_label).reduce((s, pl) => s + (Number(pl.amount) || 0), 0) : 0;
+            const available = isTeam ? pledgeTotal : (getPoints ? getPoints(r.member) : 0);
+            const canAfford = available >= (Number(r.prize_cost) || 0);
+            return (
+              <div key={r.id} style={{ background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 10, border: `1px solid ${isTeam ? "#3b82f6" : "#7c3aed"}` }}>
+                <div style={{ color: isTeam ? "#60a5fa" : "#a78bfa", fontSize: 11, fontWeight: 700, marginBottom: 4 }}>
+                  {isTeam ? "👥 TEAM PRIZE REQUEST" : "🙋 INDIVIDUAL REQUEST"}
+                </div>
+                <div style={{ color: "#60a5fa", fontWeight: 700, fontSize: 15 }}>{r.member}{isTeam ? " (on behalf of team)" : ""}</div>
+                <div style={{ color: "#e2e8f0", fontSize: 14, marginTop: 4 }}>{r.prize_label}</div>
+                <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{r.prize_cost} pts needed · Requested {r.requested_at}</div>
+                {isTeam ? (
+                  <div style={{ marginTop: 8, background: canAfford ? "#065f46" : "#1e3a5f", borderRadius: 8, padding: "10px 12px" }}>
+                    <div style={{ color: canAfford ? "#4ade80" : "#60a5fa", fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+                      {canAfford ? `✅ Fully pledged! ${pledgeTotal} / ${r.prize_cost} pts` : `⏳ Pledged so far: ${pledgeTotal} / ${r.prize_cost} pts`}
+                    </div>
+                    {canAfford && <div style={{ color: "#86efac", fontSize: 12, marginBottom: 6 }}>Approving will automatically deduct each member's pledge.</div>}
+                    {(pledges || []).filter(pl => pl.prize_label === r.prize_label).map(pl => (
                       <div key={pl.id} style={{ display: "flex", justifyContent: "space-between", color: "#94a3b8", fontSize: 12, marginTop: 2 }}>
                         <span>{pl.member}</span><span style={{ color: "#4ade80" }}>−{pl.amount} pts</span>
                       </div>
-                    ))
-                  : <div style={{ color: "#475569", fontSize: 12 }}>No pledges yet.</div>
-                }
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 8, background: canAfford ? "#065f46" : "#7f1d1d", display: "inline-block" }}>
+                    <span style={{ color: canAfford ? "#4ade80" : "#f87171", fontSize: 12, fontWeight: 700 }}>
+                      {canAfford ? `✅ Has ${available} pts (can afford)` : `❌ Only has ${available} pts — cannot afford`}
+                    </span>
+                  </div>
+                )}
+                {r.note && <div style={{ background: "#0f172a", borderRadius: 8, padding: "8px 12px", marginTop: 8, color: "#94a3b8", fontSize: 13 }}>📝 {r.note}</div>}
+                {!isTeam && r.prize_label && r.prize_label.toLowerCase().includes("break") && (
+                  <div style={{ background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 12px", marginTop: 8 }}>
+                    <div style={{ color: "#fbbf24", fontSize: 12, fontWeight: 700 }}>⏰ Break Request — verify the day in the note before approving</div>
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                  <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={() => handleApprove(r)}>✅ Approve</button>
+                  <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={() => handleDeny(r)}>❌ Deny</button>
+                </div>
               </div>
-            ) : (
-              <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 8, background: canAfford ? "#065f46" : "#7f1d1d", display: "inline-block" }}>
-                <span style={{ color: canAfford ? "#4ade80" : "#f87171", fontSize: 12, fontWeight: 700 }}>
-                  {canAfford ? `✅ Has ${available} pts (can afford)` : `❌ Only has ${available} pts — cannot afford`}
-                </span>
-              </div>
-            )}
+            );
+          })}
+        </>
+      )}
 
-            {r.note && <div style={{ background: "#0f172a", borderRadius: 8, padding: "8px 12px", marginTop: 8, color: "#94a3b8", fontSize: 13 }}>📝 {r.note}</div>}
-            {!isTeam && r.prize_label && r.prize_label.toLowerCase().includes("break") && (
-              <div style={{ background: "rgba(245,158,11,0.15)", border: "1px solid #f59e0b", borderRadius: 8, padding: "8px 12px", marginTop: 8 }}>
-                <div style={{ color: "#fbbf24", fontSize: 12, fontWeight: 700 }}>⏰ Break Request — verify the day in the note before approving</div>
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-              <button style={{ flex: 1, background: "#065f46", color: "#d1fae5", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={() => handleApprove(r)}>✅ Approve</button>
-              <button style={{ flex: 1, background: "#7f1d1d", color: "#fecaca", border: "none", borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }} onClick={() => handleDeny(r)}>❌ Deny</button>
-            </div>
-          </div>
-        );
-      })}
+      {!hasAnything && <div style={S.emptyMsg}>No pending requests 🎉</div>}
+
       {reviewed.length > 0 && (
         <>
           <div style={{ ...S.sectionTitle, marginTop: 20 }}>Past Requests</div>
@@ -1496,7 +1582,7 @@ function AdminScreen({ submissions, approveSubmission, rejectSubmission, deleteS
       {tab === "announce" && <AdminAnnouncement announcement={announcement} loadAll={r} />}
       {tab === "members" && <AdminMembers members={members} leaderboard={leaderboard} deleteMember={deleteMember} submissions={submissions} questionAnswers={questionAnswers} />}
       {tab === "cashout" && <AdminCashOut leaderboard={leaderboard} redemptions={redemptions} loadAll={r} getPoints={getPoints} getEarnedPoints={getEarnedPoints} />}
-      {tab === "requests" && <AdminRedemptionRequests requests={redemptionRequests || []} loadAll={r} getPoints={getPoints} leaderboard={leaderboard} pledges={pledges || []} />}
+      {tab === "requests" && <AdminRedemptionRequests requests={redemptionRequests || []} loadAll={r} getPoints={getPoints} leaderboard={leaderboard} pledges={pledges || []} prizes={prizes || []} />}
       {tab === "expectations" && <AdminExpectations expectations={expectations} loadAll={r} />}
       {tab === "board" && leaderboard.map((m, i) => (
         <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 14, background: "#1e293b", borderRadius: 12, padding: "14px 16px", marginBottom: 8 }}>
